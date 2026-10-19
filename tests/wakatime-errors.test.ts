@@ -1,8 +1,25 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { basicAuthHeaderFromApiKey, wakatimeGet } from "../src/wakatime.js";
+import { wakatimeGet } from "../src/wakatime.js";
 
 const path = "users/current/summaries";
-const env = { WAKATIME_API_KEY: "test-wakatime-secret", MCP_AUTH_TOKEN: "test-mcp-secret" };
+const accessToken = "waka_tok_api_access_private";
+const refreshToken = "waka_tok_refresh_private";
+const clientSecret = "test-wakatime-oauth-client-secret";
+function makeEnv(withToken = true) {
+  return {
+    MCP_AUTH_TOKEN: "test-mcp-secret",
+    WAKATIME_OAUTH_CLIENT_ID: "client-id",
+    WAKATIME_OAUTH_CLIENT_SECRET: clientSecret,
+    WAKATIME_OAUTH_REDIRECT_URI: "https://worker.example.com/oauth/callback",
+    WAKATIME_OAUTH_STORE: {
+      get: async (key: string) => key === "oauth:token" && withToken
+        ? JSON.stringify({ access_token: accessToken, refresh_token: refreshToken, expires_at: null }) : null,
+      put: async () => {},
+      delete: async () => {},
+    } as unknown as KVNamespace,
+  };
+}
+const env = makeEnv();
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -16,16 +33,16 @@ describe("WakaTime response handling", () => {
     await expect(wakatimeGet(env, path, {})).resolves.toBe(body);
   });
 
-  it.each([undefined, "", "   "])("rejects missing or blank API key before fetch: %j", async (key) => {
+  it("rejects a missing OAuth token record before fetch", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
-    await expect(wakatimeGet({ WAKATIME_API_KEY: key }, path, {})).rejects.toThrow(/WAKATIME_API_KEY/);
+    await expect(wakatimeGet(makeEnv(false), path, {})).rejects.toThrow(/OAuth/i);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it.each([
     [400, "Bad Request", { errors: { start: ["Invalid date"] } }, "Invalid date"],
-    [401, "Unauthorized", { error: "Invalid API key" }, "Invalid API key"],
+    [403, "Forbidden", { error: "Insufficient permissions" }, "Insufficient permissions"],
     [403, "Forbidden", { error: "Access denied" }, "Access denied"],
     [429, "Too Many Requests", { error: "Rate limit exceeded" }, "Rate limit exceeded"],
     [500, "Internal Server Error", { errors: ["Service unavailable"] }, "Service unavailable"],
@@ -67,17 +84,16 @@ describe("WakaTime response handling", () => {
     });
 
   it("redacts credentials in documented error fields and status text", async () => {
-    const encodedKey = basicAuthHeaderFromApiKey(env.WAKATIME_API_KEY).slice(6);
     const encodedToken = btoa(env.MCP_AUTH_TOKEN);
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({
-      error: `Invalid ${env.WAKATIME_API_KEY} ${encodedKey} ${env.MCP_AUTH_TOKEN} ${encodedToken} Authorization: Basic unrelated-secret`,
+      error: `Invalid ${clientSecret} ${accessToken} ${refreshToken} ${env.MCP_AUTH_TOKEN} ${encodedToken} Authorization: Bearer unrelated-secret`,
       errors: { start: ["Invalid date"], api_key: "unknown-secret", credentials: "cloudflare-secret" },
       debug: "private debug response",
-    }, { status: 401, statusText: `Unauthorized ${env.WAKATIME_API_KEY}` })));
+    }, { status: 403, statusText: `Forbidden ${clientSecret}` })));
     const error = await wakatimeGet(env, path, {}).catch((error: Error) => error);
     expect(error).toBeInstanceOf(Error);
     const message = (error as Error).message;
-    for (const value of [env.WAKATIME_API_KEY, encodedKey, env.MCP_AUTH_TOKEN, encodedToken,
+    for (const value of [clientSecret, accessToken, refreshToken, env.MCP_AUTH_TOKEN, encodedToken,
       "unrelated-secret", "unknown-secret", "cloudflare-secret", "private debug response"]) {
       expect(message).not.toContain(value);
     }
@@ -86,7 +102,7 @@ describe("WakaTime response handling", () => {
   });
 
   it("does not forward arbitrary fetch exception messages", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error(`network failure ${env.WAKATIME_API_KEY} cloudflare-credential`); }));
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error(`network failure ${clientSecret} cloudflare-credential`); }));
     const error = await wakatimeGet(env, path, {}).catch((error: Error) => error);
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toMatch(/WakaTime API request failed:.*network/i);
@@ -104,7 +120,7 @@ describe("WakaTime response handling", () => {
   it("redacts named credentials and quoted values in error strings", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({
       error: 'CLOUDFLARE_API_TOKEN="unknown-cloudflare-token" password="private password" api_key=unknown-api-key',
-    }, { status: 401 })));
+    }, { status: 403 })));
     const error = await wakatimeGet(env, path, {}).catch((error: Error) => error);
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).not.toMatch(/unknown-cloudflare-token|private password|unknown-api-key/);
@@ -112,13 +128,13 @@ describe("WakaTime response handling", () => {
 
   it("does not forward response stream exceptions", async () => {
     const stream = new ReadableStream({ start(controller) {
-      controller.error(new Error(`stream failed ${env.WAKATIME_API_KEY}`));
+      controller.error(new Error(`stream failed ${accessToken}`));
     } });
     vi.stubGlobal("fetch", vi.fn(async () => new Response(stream, { status: 500 })));
     const error = await wakatimeGet(env, path, {}).catch((error: Error) => error);
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toContain("500 Internal Server Error: unable to read upstream response");
-    expect((error as Error).message).not.toContain(env.WAKATIME_API_KEY);
+    expect((error as Error).message).not.toContain(accessToken);
   });
 
   it.each([
