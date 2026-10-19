@@ -4,6 +4,10 @@
 export interface Env {
   WAKATIME_API_KEY?: string;
   MCP_AUTH_TOKEN?: string;
+  WAKATIME_OAUTH_CLIENT_ID?: string;
+  WAKATIME_OAUTH_CLIENT_SECRET?: string;
+  WAKATIME_OAUTH_REDIRECT_URI?: string;
+  WAKATIME_OAUTH_STORE?: KVNamespace;
 }
 
 export function basicAuthHeaderFromApiKey(apiKey: string): string {
