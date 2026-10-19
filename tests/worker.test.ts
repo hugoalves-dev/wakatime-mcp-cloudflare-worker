@@ -4,18 +4,21 @@ import worker from "../src/index.js";
 const oauthAccessToken = "waka_tok_worker_access";
 const oauthRefreshToken = "waka_tok_worker_refresh";
 const oauthClientSecret = "worker-oauth-client-secret";
-const tokenStore = {
-  get: async (key: string) => key === "oauth:token" ? JSON.stringify({
-    access_token: oauthAccessToken, refresh_token: oauthRefreshToken, expires_at: null,
-  }) : null,
-  put: async () => {},
-  delete: async () => {},
-} as unknown as KVNamespace;
+class MemoryKV {
+  values = new Map<string, string>();
+  async get(key: string): Promise<string | null> { return this.values.get(key) ?? null; }
+  async put(key: string, value: string): Promise<void> { this.values.set(key, value); }
+  async delete(key: string): Promise<void> { this.values.delete(key); }
+}
+const tokenStore = new MemoryKV();
+tokenStore.values.set("oauth:token", JSON.stringify({
+  access_token: oauthAccessToken, refresh_token: oauthRefreshToken, expires_at: null,
+}));
 const env = {
   WAKATIME_OAUTH_CLIENT_ID: "client-id",
   WAKATIME_OAUTH_CLIENT_SECRET: oauthClientSecret,
   WAKATIME_OAUTH_REDIRECT_URI: "https://worker.example.com/oauth/callback",
-  WAKATIME_OAUTH_STORE: tokenStore,
+  WAKATIME_OAUTH_STORE: tokenStore as unknown as KVNamespace,
   MCP_AUTH_TOKEN: "remote-mcp-token",
 };
 
@@ -254,6 +257,61 @@ describe("Cloudflare Worker MCP endpoint", () => {
       {} as ExecutionContext,
     );
     expect(response.status).toBe(404);
+  });
+
+  it("returns an authorization URL from the MCP-protected OAuth start route", async () => {
+    const response = await worker.fetch(new Request("https://worker.example.com/oauth/start", {
+      headers: { Authorization: `Bearer ${env.MCP_AUTH_TOKEN}` },
+    }), env, {} as ExecutionContext);
+    const result = await response.json() as { authorization_url: string };
+    const authorizationUrl = new URL(result.authorization_url);
+    expect(response.status).toBe(200);
+    expect(authorizationUrl.origin + authorizationUrl.pathname).toBe("https://wakatime.com/oauth/authorize");
+    expect(authorizationUrl.searchParams.get("scope")).toBe("read_summaries");
+    expect(authorizationUrl.searchParams.get("redirect_uri")).toBe(env.WAKATIME_OAUTH_REDIRECT_URI);
+    const state = authorizationUrl.searchParams.get("state");
+    expect(state).toBeTruthy();
+    expect(tokenStore.values.get(`oauth:state:${state}`)).toBe("1");
+    expect(result.authorization_url).not.toContain(oauthClientSecret);
+  });
+
+  it("rejects an unauthenticated OAuth start request", async () => {
+    const before = tokenStore.values.size;
+    const response = await worker.fetch(new Request("https://worker.example.com/oauth/start"), env, {} as ExecutionContext);
+    expect(response.status).toBe(401);
+    expect(tokenStore.values.size).toBe(before);
+  });
+
+  it("rejects an invalid OAuth callback state without contacting WakaTime", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const response = await worker.fetch(new Request(
+      "https://worker.example.com/oauth/callback?code=private-code&state=invalid-state",
+    ), env, {} as ExecutionContext);
+    const text = await response.text();
+    expect(response.status).toBe(400);
+    expect(text).not.toMatch(/private-code|invalid-state|waka_tok_|worker-oauth-client-secret/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("accepts a valid OAuth callback without MCP auth and stores tokens without exposing them", async () => {
+    const state = "worker-valid-oauth-state";
+    tokenStore.values.set(`oauth:state:${state}`, "1");
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      access_token: "waka_tok_callback_access",
+      refresh_token: "waka_tok_callback_refresh",
+      expires_in: 3600,
+    })));
+    const response = await worker.fetch(new Request(
+      `https://worker.example.com/oauth/callback?code=private-code&state=${state}`,
+    ), env, {} as ExecutionContext);
+    const text = await response.text();
+    expect(response.status).toBe(200);
+    expect(text).not.toMatch(/private-code|waka_tok_callback|worker-oauth-client-secret/);
+    expect(tokenStore.values.has(`oauth:state:${state}`)).toBe(false);
+    expect(JSON.parse(tokenStore.values.get("oauth:token")!)).toMatchObject({
+      access_token: "waka_tok_callback_access", refresh_token: "waka_tok_callback_refresh",
+    });
   });
 
   it("fails closed when the authentication binding is not configured", async () => {
