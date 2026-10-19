@@ -40,7 +40,7 @@ The OAuth client ID and redirect URI are configuration values; the client secret
 
 ## Error handling and credential safety
 
-All token exchange and refresh requests use HTTPS and JSON responses, with bounded response handling. Never include raw provider payloads or exception text in logs or responses. Sanitize API errors using the current diagnostic policy, extending it to cover OAuth client credentials and access/refresh tokens. Keep authorization codes and state out of diagnostics. The callback response reveals only success or failure and contains no token or provider details.
+All token exchange and refresh requests use HTTPS and JSON responses, with bounded response handling. Never include raw provider payloads or exception text in logs or responses. Cloudflare invocation logs include request URLs, so disable invocation logs to keep the callback authorization code and state out of logs. Sanitize API errors using the current diagnostic policy, extending it to cover OAuth client credentials and access/refresh tokens. Keep authorization codes and state out of diagnostics. The callback response reveals only success or failure and contains no token or provider details.
 
 ## Testing and acceptance
 
