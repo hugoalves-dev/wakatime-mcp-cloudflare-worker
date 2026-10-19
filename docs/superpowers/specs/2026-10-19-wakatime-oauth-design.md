@@ -8,7 +8,7 @@ Replace WakaTime API key authentication for summary reads with a single-user OAu
 
 The Worker currently serves `wakatime_summaries` and `wakatime_today` from `/mcp` and authenticates outbound WakaTime requests with `WAKATIME_API_KEY` using HTTP Basic. `MCP_AUTH_TOKEN` protects inbound MCP requests. WakaTime documents OAuth access tokens for API reads, the `read_summaries` scope, authorization at `https://wakatime.com/oauth/authorize`, token exchange and refresh at `https://wakatime.com/oauth/token`, and bearer authorization for API requests.
 
-This is a single-user deployment. It must not add multi-user account management, a database, or a second authentication system for MCP clients. OAuth client credentials remain Cloudflare secrets. Rotating OAuth tokens must be persisted securely so normal refreshes do not require manual reauthorization. OAuth credentials, authorization codes, and tokens must not appear in URLs, logs, client-facing errors, or MCP results.
+This is a single-user deployment. It must not add multi-user account management, a database, or a second authentication system for MCP clients. OAuth client credentials remain Cloudflare secrets. Rotating OAuth tokens must be persisted securely so normal refreshes do not require manual reauthorization. Client secrets and OAuth access/refresh tokens must not appear in URLs, logs, client-facing errors, or MCP results. The authorization code and one-use state necessarily travel through standard OAuth authorization and callback URLs; consume each code once and never log, re-emit, or include either value in errors or responses.
 
 ## Design
 
