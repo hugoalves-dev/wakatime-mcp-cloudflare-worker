@@ -5,6 +5,7 @@ import { isAuthorized } from "./auth.js";
 import { completeAuthorization, createAuthorizationUrl } from "./oauth.js";
 import { createServer } from "./server.js";
 import type { Env } from "./wakatime.js";
+export { OAuthCoordinator } from "./oauth-coordinator.js";
 
 const unauthorized = () =>
   Response.json(

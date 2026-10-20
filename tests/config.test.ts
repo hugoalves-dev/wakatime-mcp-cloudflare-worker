@@ -9,18 +9,17 @@ describe("OAuth deployment configuration", () => {
     expect(readme).toContain("WAKATIME_OAUTH_CLIENT_ID");
     expect(readme).toContain("WAKATIME_OAUTH_CLIENT_SECRET");
     expect(readme).toContain("WAKATIME_OAUTH_REDIRECT_URI");
-    expect(readme).toContain("WAKATIME_OAUTH_STORE");
+    expect(readme).toContain("Durable Object");
     expect(readme).toContain("/oauth/start");
     expect(readme).toContain("read_summaries");
     expect(readme).not.toContain("WAKATIME_API_KEY");
   });
 
-  it("binds the dedicated OAuth KV namespace in Wrangler", () => {
+  it("binds the OAuth Durable Object in Wrangler", () => {
     expect(wrangler).toContain("WAKATIME_OAUTH_CLIENT_ID");
     expect(wrangler).toContain("WAKATIME_OAUTH_REDIRECT_URI");
-    expect(wrangler).toMatch(/"binding"\s*:\s*"WAKATIME_OAUTH_STORE"/);
-    expect(wrangler).toMatch(/"id"\s*:\s*"REPLACE_WITH_PRODUCTION_KV_NAMESPACE_ID"/);
-    expect(wrangler).toMatch(/"preview_id"\s*:\s*"REPLACE_WITH_PREVIEW_KV_NAMESPACE_ID"/);
+    expect(wrangler).toMatch(/"name"\s*:\s*"WAKATIME_OAUTH_COORDINATOR"/);
+    expect(wrangler).toContain("OAuthCoordinator");
     expect(wrangler).toMatch(/"invocation_logs"\s*:\s*false/);
   });
 });

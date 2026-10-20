@@ -1,26 +1,20 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Env } from "../src/wakatime.js";
 import { todayYmd, wakatimeGet } from "../src/wakatime.js";
+import { MemoryCoordinatorNamespace } from "./helpers/coordinator.js";
 
 const accessToken = "waka_tok_api_access";
 const refreshToken = "waka_tok_api_refresh";
 
-class MemoryKV {
-  values = new Map<string, string>();
-  async get(key: string): Promise<string | null> { return this.values.get(key) ?? null; }
-  async put(key: string, value: string): Promise<void> { this.values.set(key, value); }
-  async delete(key: string): Promise<void> { this.values.delete(key); }
-}
-
 function makeEnv(token = accessToken, expiresAt: number | null = null) {
-  const store = new MemoryKV();
+  const store = new MemoryCoordinatorNamespace({ WAKATIME_OAUTH_CLIENT_ID: "client-id", WAKATIME_OAUTH_CLIENT_SECRET: "client-secret", WAKATIME_OAUTH_REDIRECT_URI: "https://worker.example.com/oauth/callback" });
   store.values.set("oauth:token", JSON.stringify({ access_token: token, refresh_token: refreshToken, expires_at: expiresAt }));
   return {
     env: {
       WAKATIME_OAUTH_CLIENT_ID: "client-id",
       WAKATIME_OAUTH_CLIENT_SECRET: "client-secret",
       WAKATIME_OAUTH_REDIRECT_URI: "https://worker.example.com/oauth/callback",
-      WAKATIME_OAUTH_STORE: store as unknown as KVNamespace,
+      WAKATIME_OAUTH_COORDINATOR: store as unknown as DurableObjectNamespace,
     } satisfies Env,
     store,
   };

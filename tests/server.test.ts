@@ -1,21 +1,16 @@
 import { createMcpHandler } from "agents/mcp/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createServer } from "../src/server.js";
+import { MemoryCoordinatorNamespace, setToken } from "./helpers/coordinator.js";
 
 const oauthAccessToken = "waka_tok_server_access";
 function createRpcHandler() {
-  const store = {
-    get: async (key: string) => key === "oauth:token" ? JSON.stringify({
-      access_token: oauthAccessToken, refresh_token: "waka_tok_server_refresh", expires_at: null,
-    }) : null,
-    put: async () => {},
-    delete: async () => {},
-  } as unknown as KVNamespace;
+  const base = { WAKATIME_OAUTH_CLIENT_ID: "client-id", WAKATIME_OAUTH_CLIENT_SECRET: "client-secret", WAKATIME_OAUTH_REDIRECT_URI: "https://worker.example.com/oauth/callback" };
+  const store = new MemoryCoordinatorNamespace(base);
+  setToken(store, { access_token: oauthAccessToken, refresh_token: "waka_tok_server_refresh", expires_at: null });
   return createMcpHandler(() => createServer({
-    WAKATIME_OAUTH_CLIENT_ID: "client-id",
-    WAKATIME_OAUTH_CLIENT_SECRET: "client-secret",
-    WAKATIME_OAUTH_REDIRECT_URI: "https://worker.example.com/oauth/callback",
-    WAKATIME_OAUTH_STORE: store,
+    ...base,
+    WAKATIME_OAUTH_COORDINATOR: store as unknown as DurableObjectNamespace,
   }), {
     route: "/mcp",
     allowedHostnames: ["example.com"],

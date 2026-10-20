@@ -11,14 +11,8 @@ Update the `vars` values in `wrangler.jsonc`:
 - `WAKATIME_OAUTH_CLIENT_ID`: the OAuth app's client ID.
 - `WAKATIME_OAUTH_REDIRECT_URI`: the callback URL registered for this deployment.
 
-Create production and preview KV namespaces, then replace the corresponding placeholder IDs in `wrangler.jsonc`:
+The OAuth coordinator is a named Durable Object. Wrangler creates and migrates it during deployment; it serializes state consumption and token refreshes and stores the current token pair in strongly consistent Durable Object storage. Do not bind another application to this coordinator.
 
-```sh
-npx wrangler kv namespace create WAKATIME_OAUTH_STORE
-npx wrangler kv namespace create WAKATIME_OAUTH_STORE --preview
-```
-
-The Worker uses this dedicated namespace for one-use OAuth state and the current access/refresh token pair. Do not share it with another Worker or application.
 
 Wrangler invocation logs are disabled because Cloudflare includes full request URLs in those logs and the OAuth callback URL contains the one-use authorization code and state. Workers Logs remain enabled; the Worker does not log OAuth values.
 
@@ -31,7 +25,7 @@ WAKATIME_OAUTH_CLIENT_SECRET=<your WakaTime OAuth client secret>
 MCP_AUTH_TOKEN=<a long random token for MCP clients>
 ```
 
-After setting the OAuth client ID, local callback URL, and preview KV namespace ID in `wrangler.jsonc`, install dependencies and start the Worker:
+After setting the OAuth client ID and local callback URL in `wrangler.jsonc`, install dependencies and start the Worker:
 
 ```sh
 npm ci
@@ -46,7 +40,7 @@ Authorize the Worker once by requesting a setup URL with the MCP token:
 curl -H 'Authorization: Bearer <MCP_AUTH_TOKEN>' http://localhost:8787/oauth/start
 ```
 
-Open the returned `authorization_url` in a browser and approve access. WakaTime redirects to the callback, which validates the one-use state, exchanges the authorization code server-side, and stores the tokens in KV. The callback page reports success without showing credentials. If the refresh token is revoked or cannot be renewed, repeat this setup flow.
+Open the returned `authorization_url` in a browser and approve access. WakaTime redirects to the callback, which atomically consumes the one-use state, exchanges the authorization code server-side, and stores the tokens in the Durable Object. The callback page reports success without showing credentials. If the refresh token is revoked or cannot be renewed, repeat this setup flow.
 
 ## Worker routes and tools
 
@@ -62,7 +56,7 @@ Upstream failures return MCP tool results with `isError: true`. Diagnostics incl
 
 ## Deploy
 
-After registering the production callback and setting the production IDs and variables in `wrangler.jsonc`, store secrets in Cloudflare and deploy:
+After registering the production callback and setting the production variables in `wrangler.jsonc`, store secrets in Cloudflare and deploy:
 
 ```sh
 npx wrangler secret put WAKATIME_OAUTH_CLIENT_SECRET
@@ -70,7 +64,7 @@ npx wrangler secret put MCP_AUTH_TOKEN
 npm run deploy
 ```
 
-The OAuth client secret and MCP token are Cloudflare secrets. The client ID and redirect URI are non-secret Worker variables. The OAuth access and refresh tokens are stored only in the dedicated KV namespace. CI does not need or receive OAuth credentials or tokens.
+The OAuth client secret and MCP token are Cloudflare secrets. The client ID and redirect URI are non-secret Worker variables. The OAuth access and refresh tokens are stored only in Durable Object storage. CI does not need or receive OAuth credentials or tokens.
 
 Run the `/oauth/start` flow once for the deployed Worker as well, using its `/mcp` bearer token. The OAuth authorization code and state are handled by the OAuth redirect flow; do not copy or log callback query values. Reauthorize by repeating `/oauth/start` if WakaTime access is revoked or refresh fails.
 

@@ -1,23 +1,23 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { wakatimeGet } from "../src/wakatime.js";
+import { MemoryCoordinatorNamespace, setToken } from "./helpers/coordinator.js";
 
 const path = "users/current/summaries";
 const accessToken = "waka_tok_api_access_private";
 const refreshToken = "waka_tok_refresh_private";
 const clientSecret = "test-wakatime-oauth-client-secret";
 function makeEnv(withToken = true) {
-  return {
+  const env = {
     MCP_AUTH_TOKEN: "test-mcp-secret",
     WAKATIME_OAUTH_CLIENT_ID: "client-id",
     WAKATIME_OAUTH_CLIENT_SECRET: clientSecret,
     WAKATIME_OAUTH_REDIRECT_URI: "https://worker.example.com/oauth/callback",
-    WAKATIME_OAUTH_STORE: {
-      get: async (key: string) => key === "oauth:token" && withToken
-        ? JSON.stringify({ access_token: accessToken, refresh_token: refreshToken, expires_at: null }) : null,
-      put: async () => {},
-      delete: async () => {},
-    } as unknown as KVNamespace,
+    WAKATIME_OAUTH_COORDINATOR: undefined as unknown as DurableObjectNamespace,
   };
+  const ns = new MemoryCoordinatorNamespace(env);
+  if (withToken) setToken(ns, { access_token: accessToken, refresh_token: refreshToken, expires_at: null });
+  env.WAKATIME_OAUTH_COORDINATOR = ns as unknown as DurableObjectNamespace;
+  return env;
 }
 const env = makeEnv();
 

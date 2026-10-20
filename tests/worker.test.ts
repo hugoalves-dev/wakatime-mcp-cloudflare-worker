@@ -1,16 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index.js";
+import { MemoryCoordinatorNamespace } from "./helpers/coordinator.js";
 
 const oauthAccessToken = "waka_tok_worker_access";
 const oauthRefreshToken = "waka_tok_worker_refresh";
 const oauthClientSecret = "worker-oauth-client-secret";
-class MemoryKV {
-  values = new Map<string, string>();
-  async get(key: string): Promise<string | null> { return this.values.get(key) ?? null; }
-  async put(key: string, value: string): Promise<void> { this.values.set(key, value); }
-  async delete(key: string): Promise<void> { this.values.delete(key); }
-}
-const tokenStore = new MemoryKV();
+const tokenStore = new MemoryCoordinatorNamespace({
+  WAKATIME_OAUTH_CLIENT_ID: "client-id", WAKATIME_OAUTH_CLIENT_SECRET: oauthClientSecret,
+  WAKATIME_OAUTH_REDIRECT_URI: "https://worker.example.com/oauth/callback",
+});
 tokenStore.values.set("oauth:token", JSON.stringify({
   access_token: oauthAccessToken, refresh_token: oauthRefreshToken, expires_at: null,
 }));
@@ -18,7 +16,7 @@ const env = {
   WAKATIME_OAUTH_CLIENT_ID: "client-id",
   WAKATIME_OAUTH_CLIENT_SECRET: oauthClientSecret,
   WAKATIME_OAUTH_REDIRECT_URI: "https://worker.example.com/oauth/callback",
-  WAKATIME_OAUTH_STORE: tokenStore as unknown as KVNamespace,
+  WAKATIME_OAUTH_COORDINATOR: tokenStore as unknown as DurableObjectNamespace,
   MCP_AUTH_TOKEN: "remote-mcp-token",
 };
 

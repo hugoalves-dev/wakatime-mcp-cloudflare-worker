@@ -8,12 +8,16 @@
     "WAKATIME_OAUTH_CLIENT_ID": "REPLACE_WITH_WAKATIME_OAUTH_CLIENT_ID",
     "WAKATIME_OAUTH_REDIRECT_URI": "https://<worker-name>.<account-subdomain>.workers.dev/oauth/callback"
   },
-  "kv_namespaces": [
+  "durable_objects": {
+    "bindings": [
     {
-      "binding": "WAKATIME_OAUTH_STORE",
-      "id": "REPLACE_WITH_PRODUCTION_KV_NAMESPACE_ID",
-      "preview_id": "REPLACE_WITH_PREVIEW_KV_NAMESPACE_ID"
+      "name": "WAKATIME_OAUTH_COORDINATOR",
+      "class_name": "OAuthCoordinator"
     }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_classes": ["OAuthCoordinator"] }
   ],
   "observability": {
     "enabled": true,

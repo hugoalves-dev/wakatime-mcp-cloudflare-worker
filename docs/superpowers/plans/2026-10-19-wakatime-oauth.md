@@ -4,9 +4,9 @@
 
 **Goal:** Replace WakaTime API-key reads with single-user OAuth while preserving MCP bearer authentication and automatically refreshing stored credentials.
 
-**Architecture:** Add an OAuth module for state, token exchange, and Cloudflare KV persistence. Route the MCP-authorized start endpoint and state-validated callback through the Worker; make WakaTime reads obtain and refresh bearer tokens through the OAuth module. Update Wrangler and README for the new Cloudflare setup.
+**Architecture:** Add an OAuth module for state, token exchange, and Durable Object persistence. Route the MCP-authorized start endpoint and state-validated callback through the Worker; make WakaTime reads obtain and refresh bearer tokens through the OAuth module. Update Wrangler and README for the new Cloudflare setup.
 
-**Tech Stack:** TypeScript, Cloudflare Workers, Workers KV, Vitest, Wrangler.
+**Tech Stack:** TypeScript, Cloudflare Workers, Durable Objects, Vitest, Wrangler.
 
 **Spec:** `docs/superpowers/specs/2026-10-19-wakatime-oauth-design.md`
 
@@ -15,7 +15,7 @@
 - This is a single-user deployment; do not add multi-user account management, a database, or a second authentication system for MCP clients.
 - `/mcp` and `/oauth/start` require the existing `MCP_AUTH_TOKEN`; `/oauth/callback` validates one-use state.
 - Request only `read_summaries`; do not include client secrets or OAuth access/refresh tokens in URLs, logs, client-facing errors, or MCP results.
-- Keep client secrets in Cloudflare secrets and rotated OAuth tokens in the dedicated KV namespace.
+- Keep client secrets in Cloudflare secrets and rotated OAuth tokens in the named Durable Object.
 - Preserve the existing summaries query parameters, response envelope, and MCP tool inputs.
 
 ## Review Focus
@@ -28,7 +28,7 @@
 
 ---
 
-### Task 1: OAuth state, code exchange, and KV token storage
+### Task 1: OAuth state, code exchange, and Durable Object token storage
 
 **Files:**
 - Create: `src/oauth.ts`
@@ -36,14 +36,14 @@
 - Create: `tests/oauth.test.ts`
 
 **Interfaces:**
-- Produces `Env` with `WAKATIME_OAUTH_CLIENT_ID?: string`, `WAKATIME_OAUTH_CLIENT_SECRET?: string`, `WAKATIME_OAUTH_REDIRECT_URI?: string`, and `WAKATIME_OAUTH_STORE?: KVNamespace`.
+- Produces `Env` with `WAKATIME_OAUTH_CLIENT_ID?: string`, `WAKATIME_OAUTH_CLIENT_SECRET?: string`, `WAKATIME_OAUTH_REDIRECT_URI?: string`, and `WAKATIME_OAUTH_COORDINATOR?: DurableObjectNamespace`.
 - Produces `createAuthorizationUrl(env: Env): Promise<string>`, `completeAuthorization(request: Request, env: Env): Promise<Response>`, `getAccessToken(env: Env): Promise<string>`, and `refreshAccessToken(env: Env, rejectedToken?: string): Promise<string>`.
-- KV keys are private implementation details using fixed token key `oauth:token` and random state keys under `oauth:state:`; callback consumes the state record before exchange.
+- The coordinator uses strongly consistent durable storage and serializes state consumption and refresh-token rotation.
 - Token records store `access_token`, `refresh_token`, and `expires_at` as a JSON object; an omitted `expires_in` maps to no expiry time.
 
-- [ ] **Step 1: Write failing tests** for authorization URL scope and redirect, state persistence/expiry, callback rejection for absent/expired/replayed state, successful code exchange and KV storage, malformed token JSON or missing access/refresh token, and no credentials in callback response.
+- [ ] **Step 1: Write failing tests** for authorization URL scope and redirect, state persistence/expiry, callback rejection for absent/expired/replayed state, successful code exchange and Durable Object storage, malformed token JSON or missing access/refresh token, and no credentials in callback response.
 - [ ] **Step 2: Run `npm test -- tests/oauth.test.ts`** and confirm each new behavior fails because OAuth helpers are not implemented.
-- [ ] **Step 3: Implement the four exported helpers in `src/oauth.ts`.** Use Web Crypto for random state; use WakaTime's HTTPS authorize/token endpoints and JSON POST bodies; set bounded KV state expiry; validate token response fields before writing; return generic callback responses.
+- [ ] **Step 3: Implement the four exported helpers in `src/oauth.ts`.** Use Web Crypto for random state; use WakaTime's HTTPS authorize/token endpoints and JSON POST bodies; set bounded Durable Object state expiry; validate token response fields before writing; return generic callback responses.
 - [ ] **Step 4: Re-run `npm test -- tests/oauth.test.ts`** and confirm all OAuth storage and callback tests pass.
 - [ ] **Step 5: Commit** as `feat: add WakaTime OAuth token storage`.
 
@@ -90,12 +90,12 @@
 - Modify: tests as required for the final configuration contract
 
 **Interfaces:**
-- Binds the dedicated `WAKATIME_OAUTH_STORE` KV namespace in Wrangler.
+- Binds the dedicated `WAKATIME_OAUTH_COORDINATOR` Durable Object in Wrangler.
 - Documents non-secret variables `WAKATIME_OAUTH_CLIENT_ID` and `WAKATIME_OAUTH_REDIRECT_URI`, secrets `WAKATIME_OAUTH_CLIENT_SECRET` and `MCP_AUTH_TOKEN`, and removal of `WAKATIME_API_KEY`.
 
 - [ ] **Step 1: Add a configuration/documentation assertion** that README and Wrangler use the OAuth variable names and no longer instruct operators to set `WAKATIME_API_KEY`.
 - [ ] **Step 2: Run the focused documentation/configuration check** and confirm it fails before those instructions are updated.
-- [ ] **Step 3: Add the KV binding and rewrite setup instructions** to cover OAuth app registration, exact callback URL and scope, secret/configuration setup, namespace creation/binding, deployment, and calling `/oauth/start` with the MCP bearer token.
+- [ ] **Step 3: Add the Durable Object binding and rewrite setup instructions** to cover OAuth app registration, exact callback URL and scope, secret/configuration setup, Durable Object migration/binding, deployment, and calling `/oauth/start` with the MCP bearer token.
 - [ ] **Step 4: Run `npm test` and `npm run build`**; confirm all tests pass and the TypeScript/Wrangler dry-run build succeeds.
 - [ ] **Step 5: Commit** as `docs: document WakaTime OAuth deployment setup`.
 

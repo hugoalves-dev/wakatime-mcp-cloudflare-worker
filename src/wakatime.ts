@@ -1,13 +1,13 @@
 // ABOUTME: Worker-safe WakaTime API and timezone helpers.
 // ABOUTME: All credentials arrive through explicit Cloudflare environment bindings.
-import { getAccessToken, refreshAccessToken } from "./oauth.js";
+import { getAccessToken, getRefreshToken, refreshAccessToken } from "./oauth.js";
 
 export interface Env {
   MCP_AUTH_TOKEN?: string;
   WAKATIME_OAUTH_CLIENT_ID?: string;
   WAKATIME_OAUTH_CLIENT_SECRET?: string;
   WAKATIME_OAUTH_REDIRECT_URI?: string;
-  WAKATIME_OAUTH_STORE?: KVNamespace;
+  WAKATIME_OAUTH_COORDINATOR?: DurableObjectNamespace;
 }
 
 export function todayYmd(tz = "Asia/Tokyo"): string {
@@ -102,11 +102,14 @@ export async function wakatimeGet(
   );
 
   let accessToken: string;
+  let refreshToken: string;
   try {
     accessToken = await getAccessToken(env);
+    refreshToken = await getRefreshToken(env);
   } catch {
     throw failure("OAuth credentials are unavailable; authorize or reauthorize WakaTime");
   }
+  const refreshSecrets = [refreshToken];
 
   const request = async (token: string) => fetch(url, {
     method: "GET",
@@ -118,13 +121,16 @@ export async function wakatimeGet(
   try {
     response = await request(accessToken);
   } catch {
-    throw failure("network request failed; try again later", [accessToken]);
+    throw failure("network request failed; try again later", [accessToken, ...refreshSecrets]);
   }
 
   if (response.status === 401) {
     try { await response.body?.cancel(); } catch { /* The retry does not depend on draining the 401 body. */ }
     try {
       accessToken = await refreshAccessToken(env, accessToken);
+      refreshSecrets.push(refreshToken);
+      refreshToken = await getRefreshToken(env);
+      refreshSecrets.push(refreshToken);
       response = await request(accessToken);
     } catch {
       throw failure("401 Unauthorized; OAuth refresh failed; reauthorize WakaTime");
@@ -136,13 +142,13 @@ export async function wakatimeGet(
   try {
     text = await response.text();
   } catch {
-    throw failure(`${status}: unable to read upstream response`, [accessToken]);
+    throw failure(`${status}: unable to read upstream response`, [accessToken, ...refreshSecrets]);
   }
   let body: unknown;
   try { body = JSON.parse(text); } catch { body = undefined; }
 
   if (!response.ok) {
-    let detail = sanitizeDiagnostic(upstreamErrorDetails(body), env, [accessToken]).slice(0, 1000)
+    let detail = sanitizeDiagnostic(upstreamErrorDetails(body), env, [accessToken, ...refreshSecrets]).slice(0, 1000)
       || "no usable error details from upstream";
     if (response.status === 302) detail += "; possible rate limit redirect; spread requests over a few minutes";
     if (response.status === 429) {
@@ -155,10 +161,10 @@ export async function wakatimeGet(
         if (Number.isFinite(date)) detail += `; Retry-After: ${new Date(date).toUTCString()}`;
       }
     }
-    throw failure(`${status}: ${detail}`, [accessToken]);
+    throw failure(`${status}: ${detail}`, [accessToken, ...refreshSecrets]);
   }
   if (!isObject(body) || !Array.isArray(body.data) || body.error || body.errors) {
-    throw failure(`${status}: invalid WakaTime summaries response; expected a JSON object with a data array`, [accessToken]);
+    throw failure(`${status}: invalid WakaTime summaries response; expected a JSON object with a data array`, [accessToken, ...refreshSecrets]);
   }
   // Preserve all daily/aggregate fields without assuming a fixed summary schema.
   return text;
