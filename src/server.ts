@@ -4,6 +4,7 @@ import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import type { Env } from "./wakatime.js";
 import { todayYmd, wakatimeGet, WakaTimeRequestError } from "./wakatime.js";
+import { createAuthorizationUrl } from "./oauth.js";
 
 const timezoneInput = z.string().refine((timezone) => {
   if (!timezone || /^[+-]/.test(timezone)) return false;
@@ -44,6 +45,18 @@ async function toolResult(request: () => Promise<string>) {
 
 export function createServer(env: Env): McpServer {
   const server = new McpServer({ name: "wakatime-mcp", version: "0.0.2" });
+
+  server.registerTool(
+    "wakatime_connect",
+    {
+      description: "Connect or reconnect the WakaTime account using OAuth. Returns a browser authorization URL.",
+      inputSchema: z.object({}).strict(),
+    },
+    async () => toolResult(async () => {
+      const url = await createAuthorizationUrl(env);
+      return `Open this WakaTime authorization URL in your browser: ${url}. After approving access, retry the original MCP request.`;
+    }),
+  );
 
   server.registerTool(
     "wakatime_summaries",
