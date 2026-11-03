@@ -3,7 +3,8 @@
 import { getAccessToken, getRefreshToken, refreshAccessToken } from "./oauth.js";
 
 export interface Env {
-  MCP_AUTH_TOKEN?: string;
+  MCP_AUTH_TOKEN?: string; // No longer used for MCP access; retained for legacy error redaction.
+  WAKATIME_OWNER_EMAIL?: string;
   OAUTH_KV: KVNamespace;
   OAUTH_PROVIDER?: import("@cloudflare/workers-oauth-provider").OAuthHelpers;
   WAKATIME_OAUTH_CLIENT_ID?: string;
