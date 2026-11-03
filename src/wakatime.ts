@@ -4,6 +4,8 @@ import { getAccessToken, getRefreshToken, refreshAccessToken } from "./oauth.js"
 
 export interface Env {
   MCP_AUTH_TOKEN?: string;
+  OAUTH_KV: KVNamespace;
+  OAUTH_PROVIDER?: import("@cloudflare/workers-oauth-provider").OAuthHelpers;
   WAKATIME_OAUTH_CLIENT_ID?: string;
   WAKATIME_OAUTH_CLIENT_SECRET?: string;
   WAKATIME_OAUTH_REDIRECT_URI?: string;

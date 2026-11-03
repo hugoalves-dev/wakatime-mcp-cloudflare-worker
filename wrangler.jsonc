@@ -27,5 +27,14 @@
       "invocation_logs": false,
       "head_sampling_rate": 1
     }
-  }
+  },
+  "compatibility_flags": [
+    "global_fetch_strictly_public"
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "OAUTH_KV",
+      "id": "bc929f15573e41d0a872b416e21296e8"
+    }
+  ]
 }
