@@ -88,7 +88,8 @@ export function createOAuthProvider(): OAuthProvider<Env> {
     apiRoute: "/mcp",
     apiHandler: {
       fetch(request: Request, env: Env, ctx: ExecutionContext) {
-        if (!ctx.auth.scope.includes("mcp:read")) return new Response("Insufficient scope", { status: 403 });
+        const auth = (ctx as ExecutionContext & { auth?: { scope: string[] } }).auth;
+        if (!auth?.scope.includes("mcp:read")) return new Response("Insufficient scope", { status: 403 });
         const handler = createMcpHandler(() => createServer(env), { route: "/mcp" });
         return handler(request, env, ctx);
       },
