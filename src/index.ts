@@ -3,7 +3,7 @@
 import { isAuthorized } from "./auth.js";
 import { completeAuthorization, createAuthorizationUrl } from "./oauth.js";
 import type { Env } from "./wakatime.js";
-export { OAuthCoordinator } from "./oauth-coordinator.js";
+export { OAuthCoordinator as WakaTimeOAuthCoordinator } from "./oauth-coordinator.js";
 
 const unauthorized = () => Response.json({ error: "Unauthorized" }, {
   status: 401, headers: { "WWW-Authenticate": "Bearer" },
