@@ -54,7 +54,7 @@ export class OAuthCoordinator {
       const expires = typeof saved === "number" ? saved : saved?.expires;
       if (expires === undefined || expires < Date.now()) return undefined;
       await txn.delete(key);
-      return typeof saved === "number" ? {} : saved;
+      return typeof saved === "number" ? { consentHandle: undefined } : saved;
     });
     if (!valid) return Response.json({ ok: false }, { status: 400 });
     const record = await this.exchange({ grant_type: "authorization_code", code });
