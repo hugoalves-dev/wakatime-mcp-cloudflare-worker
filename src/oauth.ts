@@ -23,15 +23,15 @@ function randomState(): string {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-export async function createAuthorizationUrl(env: Env): Promise<string> {
+export async function createAuthorizationUrl(env: Env, consentHandle?: string): Promise<string> {
   const state = randomState();
-  const response = await rpc(env, "/start", { state, ttl: STATE_TTL_SECONDS });
+  const response = await rpc(env, "/start", { state, ttl: STATE_TTL_SECONDS, consentHandle });
   if (!response.ok) throw new Error("OAuth setup is unavailable.");
   const url = new URL("https://wakatime.com/oauth/authorize");
   url.searchParams.set("client_id", env.WAKATIME_OAUTH_CLIENT_ID!);
   url.searchParams.set("response_type", "code");
   url.searchParams.set("redirect_uri", env.WAKATIME_OAUTH_REDIRECT_URI!);
-  url.searchParams.set("scope", "read_summaries");
+  url.searchParams.set("scope", "email read_summaries");
   url.searchParams.set("state", state);
   return url.toString();
 }
@@ -45,19 +45,26 @@ function callbackResponse(status: number, success: boolean): Response {
   });
 }
 
-export async function completeAuthorization(request: Request, env: Env): Promise<Response> {
+export async function processAuthorizationCallback(request: Request, env: Env): Promise<{ status: number; consentHandle?: string }> {
   let stub: DurableObjectStub;
-  try { stub = coordinator(env); } catch { return callbackResponse(500, false); }
+  try { stub = coordinator(env); } catch { return { status: 500 }; }
   const url = new URL(request.url);
   const code = url.searchParams.get("code");
   const state = url.searchParams.get("state");
-  if (!code || !state || state.length > 256) return callbackResponse(400, false);
+  if (!code || !state || state.length > 256) return { status: 400 };
   try {
     const response = await stub.fetch("https://oauth-coordinator/callback", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code, state }),
     });
-    return callbackResponse(response.ok ? 200 : response.status === 400 ? 400 : 500, response.ok);
-  } catch { return callbackResponse(500, false); }
+    if (!response.ok) return { status: response.status === 400 || response.status === 403 ? response.status : 500 };
+    const data = await response.json() as { consentHandle?: unknown };
+    return { status: 200, consentHandle: typeof data.consentHandle === "string" ? data.consentHandle : undefined };
+  } catch { return { status: 500 }; }
+}
+
+export async function completeAuthorization(request: Request, env: Env): Promise<Response> {
+  const outcome = await processAuthorizationCallback(request, env);
+  return callbackResponse(outcome.status, outcome.status === 200);
 }
 
 async function tokenRequest(env: Env, path: string, body: Record<string, unknown> = {}): Promise<string> {
