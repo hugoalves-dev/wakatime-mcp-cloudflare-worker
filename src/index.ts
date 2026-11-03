@@ -1,7 +1,7 @@
 // ABOUTME: Cloudflare Worker serving WakaTime account OAuth and MCP client OAuth 2.1.
 // ABOUTME: Legacy MCP_AUTH_TOKEN clients remain supported alongside OAuth clients.
 import type { Env } from "./wakatime.js";
-export { OAuthCoordinator as WakaTimeOAuthCoordinator } from "./oauth-coordinator.js";
+export { OAuthCoordinator, OAuthCoordinator as WakaTimeOAuthCoordinator } from "./oauth-coordinator.js";
 
 const unauthorized = () => Response.json({ error: "Unauthorized" }, {
   status: 401, headers: { "WWW-Authenticate": "Bearer" },
