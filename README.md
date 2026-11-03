@@ -1,99 +1,59 @@
 # WakaTime MCP for Cloudflare Workers
 
-An authenticated remote MCP server for WakaTime summaries. The Worker exposes `wakatime_summaries` and `wakatime_today` over Streamable HTTP at `/mcp`. WakaTime API reads use a single account's OAuth 2.0 token; MCP clients may authenticate via OAuth 2.1 (ChatGPT and other OAuth-capable clients) or the existing static `MCP_AUTH_TOKEN` bearer credential.
+An authenticated remote MCP server for WakaTime summaries. The Worker exposes `wakatime_summaries` and `wakatime_today` over Streamable HTTP at `/mcp`. WakaTime API reads use a single account's OAuth 2.0 token; MCP clients authenticate via OAuth 2.1 (ChatGPT and other OAuth-capable clients).
 
 ## Configure WakaTime OAuth
 
 Create an OAuth app at [wakatime.com/apps](https://wakatime.com/apps). Request the `read_summaries` scope and register the callback URL for each deployment, exactly as configured in the Worker environment. The production callback uses `https://<worker-name>.<account-subdomain>.workers.dev/oauth/callback`; local development uses `http://localhost:8787/oauth/callback`.
 
-Configure `WAKATIME_OAUTH_CLIENT_ID` and `WAKATIME_OAUTH_REDIRECT_URI` as Worker secrets, along with `WAKATIME_OAUTH_CLIENT_SECRET` and `MCP_AUTH_TOKEN`. Do not add these to `vars` in `wrangler.jsonc`; Wrangler deploys may overwrite dashboard-managed values.
+Configure `WAKATIME_OAUTH_CLIENT_ID` and `WAKATIME_OAUTH_REDIRECT_URI` as Worker secrets, along with `WAKATIME_OAUTH_CLIENT_SECRET` and `WAKATIME_OWNER_EMAIL`. Do not add these to `vars` in `wrangler.jsonc`; Wrangler deploys may overwrite dashboard-managed values.
 
 The OAuth coordinator is a named Durable Object. Wrangler creates and migrates it during deployment; it serializes state consumption and token refreshes and stores the current token pair in strongly consistent Durable Object storage. Do not bind another application to this coordinator.
 
 
 Wrangler invocation logs are disabled because Cloudflare includes full request URLs in those logs and the OAuth callback URL contains the one-use authorization code and state. Workers Logs remain enabled; the Worker does not log OAuth values.
 
-## Local development
+## Authentication architecture
 
-Use Node.js 24 and npm. Create an ignored `.dev.vars` file with the OAuth settings and a long random MCP token:
+The Worker uses two OAuth flows:
+
+1. ChatGPT discovers the MCP server at `/mcp`, registers through DCR or CIMD, and requests an OAuth authorization code using PKCE.
+2. The consent page redirects the browser to WakaTime OAuth with `email read_summaries` scopes. The callback exchanges the code server-side, verifies the signed-in account against the configured `WAKATIME_OWNER_EMAIL`, and only then issues the MCP authorization code back to the client.
+
+**Dynamic registration does not authenticate an account owner.** `WAKATIME_OWNER_EMAIL` is mandatory for new MCP client authorizations; missing or mismatched identities fail closed. Configure it as a Cloudflare Worker secret with the email address confirmed on your WakaTime account.
+
+The old `MCP_AUTH_TOKEN` static bearer bypass, owner-password consent form, and `/oauth/start` endpoint are removed. Clients now authenticate exclusively via OAuth 2.1, while the separate `wakatime_connect` MCP tool can renew account authorization for already-authorized clients.
+
+All client IDs, token exchanges and stored credentials remain server-side. The WakaTime OAuth app callback should be configured as:
 
 ```text
-WAKATIME_OAUTH_CLIENT_ID=<your WakaTime OAuth client ID>
-WAKATIME_OAUTH_CLIENT_SECRET=<your WakaTime OAuth client secret>
-WAKATIME_OAUTH_REDIRECT_URI=http://localhost:8787/oauth/callback
-MCP_AUTH_TOKEN=<a long random token for MCP clients>
+https://wakatime-mcp.hugoalves-java.workers.dev/oauth/callback
 ```
 
-Install dependencies and start the Worker:
+### Cloudflare secrets
 
-```sh
-npm ci
-npm run dev
+Configure the following in the Worker environment before connecting a new client:
+
+```text
+WAKATIME_OAUTH_CLIENT_ID
+WAKATIME_OAUTH_CLIENT_SECRET
+WAKATIME_OAUTH_REDIRECT_URI
+WAKATIME_OWNER_EMAIL
 ```
 
-The MCP endpoint is `http://localhost:8787/mcp`. Clients can use the existing `Authorization: Bearer <MCP_AUTH_TOKEN>` header, or OAuth 2.1 authorization on a deployed instance. For local OAuth testing, change the `ORIGIN` constant in `src/mcp-oauth.ts` to `http://localhost:8787`.
+The owner email is an identity allowlist, not a shared password. Do not include secrets in `wrangler.jsonc`. The Worker persists WakaTime access and refresh tokens in its SQLite-backed Durable Object; MCP OAuth grant storage uses the `OAUTH_KV` namespace.
 
-Authorize the Worker once by requesting a setup URL with the MCP token:
+The previous Durable Object class could not be provisioned reliably by the earlier CI migration. A new `WakaTimeOAuthCoordinator` SQLite class uses migration `v2-wakatime-sqlite`; previously stored tokens in another Durable Object class are not automatically transferred.
 
-```sh
-curl -H 'Authorization: Bearer <MCP_AUTH_TOKEN>' http://localhost:8787/oauth/start
-```
+### Local development
 
-Open the returned `authorization_url` in a browser and approve access. WakaTime redirects to the callback, which atomically consumes the one-use state, exchanges the authorization code server-side, and stores the tokens in the Durable Object. The callback page reports success without showing credentials. If the refresh token is revoked or cannot be renewed, repeat this setup flow.
+Use Node.js 24, `npm ci`, and `npm run dev`. For local OAuth, provide the four environment settings in an ignored `.dev.vars` file and update `ORIGIN` in `src/mcp-oauth.ts` to your local Worker URL.
 
-## Worker routes and tools
+### ChatGPT MCP
 
-- `GET /oauth/start` requires the same `MCP_AUTH_TOKEN` as `/mcp` and returns a WakaTime authorization URL.
-- `GET /oauth/callback` is the registered OAuth redirect. It requires a valid unexpired one-use state created by `/oauth/start`.
-- `/mcp` accepts either the existing `MCP_AUTH_TOKEN` or an OAuth 2.1 access token scoped to `mcp:read`.
-- `/.well-known/oauth-protected-resource/mcp`, `/.well-known/oauth-authorization-server`, `/authorize`, `/oauth/token`, and `/oauth/register` support OAuth client discovery and authorization.
-- `GET /authorize` renders a consent page that displays the client's identity, requested scopes, and callback host. Approval requires the owner `MCP_AUTH_TOKEN`, supplied in the password field over HTTPS. No anonymous authorization is permitted.
-- OAuth grants are stored in the Cloudflare `OAUTH_KV` namespace and are separate from the WakaTime account token in Durable Objects.
-- `wakatime_summaries` accepts required valid `start` and `end` dates in `YYYY-MM-DD` format (`start` must be on or before `end`), plus optional `project` and IANA `timezone` values. Omitting `timezone` uses the WakaTime account's timezone.
-- `wakatime_today` accepts optional `project` and `timezone` values. The default timezone is `Asia/Tokyo`.
+Use the URL `https://wakatime-mcp.hugoalves-java.workers.dev/mcp` and **OAuth** authentication. Choose DCR if available. Approve the MCP consent, then authorize the configured owner account on WakaTime. No manual MCP bearer token or owner password is required.
 
-Both tools call `GET https://api.wakatime.com/api/v1/users/current/summaries` with the documented `timezone` query parameter and `Authorization: Bearer <access_token>`. Today's date is calculated in the same timezone sent to WakaTime. Successful results preserve the complete summaries JSON envelope, including daily and aggregate fields.
-
-Upstream failures return MCP tool results with `isError: true`. Diagnostics include HTTP status, status text, sanitized `error`/`errors` messages, endpoint, and query parameter names. Request context contains no query values. Known credentials and named credential values are redacted; unrelated response fields and raw non-JSON bodies are excluded. Network, OAuth, and response-stream exceptions use controlled messages. Requests are not retried automatically, except that an API 401 triggers one token refresh and one retry. HTTP 403 is returned without refreshing. HTTP 429 includes rate-limit guidance and a valid `Retry-After` header when supplied. WakaTime also documents 302 redirects as possible rate limiting; redirects are reported without following them.
-
-## Deploy
-
-After registering the production callback, store the four settings as Cloudflare Worker secrets (skip any that are already configured), then deploy:
-
-```sh
-npx wrangler secret put WAKATIME_OAUTH_CLIENT_ID
-npx wrangler secret put WAKATIME_OAUTH_CLIENT_SECRET
-npx wrangler secret put WAKATIME_OAUTH_REDIRECT_URI
-npx wrangler secret put MCP_AUTH_TOKEN
-npm run deploy
-```
-
-All four settings are managed as Worker secrets so deployments do not overwrite dashboard-managed credentials with placeholders. The OAuth access and refresh tokens are stored only in Durable Object storage. CI does not need or receive OAuth credentials or tokens.
-
-Run the `/oauth/start` flow once for the deployed Worker as well, using its `/mcp` bearer token. The OAuth authorization code and state are handled by the OAuth redirect flow; do not copy or log callback query values. Reauthorize by repeating `/oauth/start` if WakaTime access is revoked or refresh fails.
-
-## Configure an MCP client
-
-Use the deployed Worker URL with `/mcp` and supply the MCP bearer token in the `Authorization` header. For clients with HTTP header configuration:
-
-```json
-{
-  "url": "https://<worker-name>.<account-subdomain>.workers.dev/mcp",
-  "headers": {
-    "Authorization": "Bearer <MCP_AUTH_TOKEN>"
-  }
-}
-```
-
-OAuth-capable clients instead use the built-in OAuth discovery and authorization code + PKCE flow, which never exposes the WakaTime OAuth client secret or WakaTime access tokens. When asked for credentials on the Worker approval page, enter the *owner* `MCP_AUTH_TOKEN`, **not** the WakaTime OAuth secret.
-
-### ChatGPT custom MCP setup
-
-In **Plugins → Add custom MCP server**, set **Server URL** to `https://wakatime-mcp.hugoalves-java.workers.dev/mcp` and **Authentication** to **OAuth**. Use client metadata discovery (CIMD) if offered, otherwise Dynamic Client Registration (DCR). Do not provide the WakaTime OAuth app client ID and secret to ChatGPT; they are only for Worker-to-WakaTime authentication. Authorize on the Worker consent page with your existing `MCP_AUTH_TOKEN` owner password. If you lost that token, rotate its Cloudflare Worker secret first.
-
-The MCP OAuth server uses the official `@cloudflare/workers-oauth-provider` library. OAuth state and tokens are in the dedicated Workers KV namespace `wakatime-mcp-oauth`. The Worker is currently bound to its workers.dev URL via `src/mcp-oauth.ts`; update the fixed origin if you migrate to a custom domain.
-
-**Separate initial authorization:** OAuth access to the MCP server does not authorize the Worker's own WakaTime API account. Complete the existing `/oauth/start` → `/oauth/callback` setup once to populate the WakaTime Durable Object token store.
+Tools: `wakatime_summaries`, `wakatime_today`, and `wakatime_connect`. Only `wakatime_connect` returns an upstream OAuth authorization link; it must be invoked from an already OAuth-authenticated MCP client.
 
 ## Checks and CI
 
