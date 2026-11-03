@@ -63,7 +63,7 @@ afterEach(() => {
 });
 
 describe("WakaTime MCP server", () => {
-  it("registers the two existing tools", async () => {
+  it("registers the summaries tools and account OAuth connection", async () => {
     const handler = createRpcHandler();
     await initialize(handler);
     const result = await rpc(handler, {
@@ -73,6 +73,7 @@ describe("WakaTime MCP server", () => {
     }) as { result: { tools: Array<{ name: string }> } };
 
     expect(result.result.tools.map((tool) => tool.name).sort()).toEqual([
+      "wakatime_connect",
       "wakatime_summaries",
       "wakatime_today",
     ]);
