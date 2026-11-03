@@ -4,20 +4,21 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-10-05",
   "workers_dev": true,
-  "vars": {
-    "WAKATIME_OAUTH_CLIENT_ID": "REPLACE_WITH_WAKATIME_OAUTH_CLIENT_ID",
-    "WAKATIME_OAUTH_REDIRECT_URI": "https://<worker-name>.<account-subdomain>.workers.dev/oauth/callback"
-  },
   "durable_objects": {
     "bindings": [
-    {
-      "name": "WAKATIME_OAUTH_COORDINATOR",
-      "class_name": "OAuthCoordinator"
-    }
+      {
+        "name": "WAKATIME_OAUTH_COORDINATOR",
+        "class_name": "OAuthCoordinator"
+      }
     ]
   },
   "migrations": [
-    { "tag": "v1", "new_classes": ["OAuthCoordinator"] }
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "OAuthCoordinator"
+      ]
+    }
   ],
   "observability": {
     "enabled": true,
