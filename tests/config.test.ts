@@ -24,7 +24,7 @@ describe("OAuth deployment configuration", () => {
     expect(readme).toContain("WAKATIME_OAUTH_REDIRECT_URI");
     expect(readme).toContain("Worker secrets");
     expect(readme).toContain("Durable Object");
-    expect(readme).toContain("/oauth/start");
+    expect(readme).toContain("WAKATIME_OWNER_EMAIL");
     expect(readme).toContain("read_summaries");
     expect(readme).not.toContain("WAKATIME_API_KEY");
   });
