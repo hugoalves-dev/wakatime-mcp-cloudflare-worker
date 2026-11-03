@@ -11,6 +11,7 @@ const notFound = () => new Response("Not found", { status: 404 });
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const path = new URL(request.url).pathname;
+    if (path === "/oauth/start") return notFound();
     // MCP access requires an OAuth 2.1 grant; static bearer bypass is disabled.
     if (path === "/mcp" && !env.OAUTH_KV) return unauthorized();
     // OAuth discovery, registration, authorization, token exchange and resource authentication.
