@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { completeAuthorization, createAuthorizationUrl, getAccessToken, refreshAccessToken } from "../src/oauth.js";
+import { completeAuthorization, createAuthorizationUrl, processAuthorizationCallback, getAccessToken, refreshAccessToken } from "../src/oauth.js";
 import type { Env } from "../src/wakatime.js";
 import { MemoryCoordinatorNamespace, setState, setToken } from "./helpers/coordinator.js";
 
@@ -74,6 +74,48 @@ describe("WakaTime OAuth", () => {
       expect(response.status).toBe(500);
       expect(ns.storage.values.has("token")).toBe(false);
     }
+  });
+
+  it("requires the configured WakaTime owner to approve MCP consent", async () => {
+    const { env, ns } = makeEnv();
+    env.WAKATIME_OWNER_EMAIL = "owner@example.com";
+    const authorizeUrl = new URL(await createAuthorizationUrl(env, "consent-handle"));
+    const state = authorizeUrl.searchParams.get("state");
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/oauth/token")) {
+        return Response.json({ access_token: accessToken, refresh_token: refreshToken });
+      }
+      if (url.includes("/users/current")) {
+        return Response.json({ data: { email: "attacker@example.com", is_email_confirmed: true } });
+      }
+      throw new Error("Unexpected upstream URL");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await processAuthorizationCallback(
+      new Request(`https://worker.example.com/oauth/callback?code=code&state=${state}`), env,
+    );
+    expect(result.status).toBe(403);
+    expect(ns.storage.values.has("token")).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("grants MCP consent only to the verified owner", async () => {
+    const { env, ns } = makeEnv();
+    env.WAKATIME_OWNER_EMAIL = "owner@example.com";
+    const authorizeUrl = new URL(await createAuthorizationUrl(env, "approved-handle"));
+    const state = authorizeUrl.searchParams.get("state");
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes("/oauth/token")) {
+        return Response.json({ access_token: accessToken, refresh_token: refreshToken });
+      }
+      return Response.json({ data: { email: "owner@example.com", is_email_confirmed: true } });
+    }));
+    const result = await processAuthorizationCallback(
+      new Request(`https://worker.example.com/oauth/callback?code=code&state=${state}`), env,
+    );
+    expect(result).toEqual({ status: 200, consentHandle: "approved-handle" });
+    expect(ns.storage.values.get("token")).toMatchObject({ access_token: accessToken });
   });
 
   it("reads and refreshes tokens, serializing concurrent refreshes and rotation", async () => {
