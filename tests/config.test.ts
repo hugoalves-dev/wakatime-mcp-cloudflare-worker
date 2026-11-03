@@ -33,11 +33,11 @@ describe("OAuth deployment configuration", () => {
     expect(wrangler.vars).toBeUndefined();
     expect(wrangler.durable_objects?.bindings).toContainEqual({
       name: "WAKATIME_OAUTH_COORDINATOR",
-      class_name: "OAuthCoordinator",
+      class_name: "WakaTimeOAuthCoordinator",
     });
     expect(wrangler.migrations).toContainEqual({
-      tag: "v1",
-      new_sqlite_classes: ["OAuthCoordinator"],
+      tag: "v2-wakatime-sqlite",
+      new_sqlite_classes: ["WakaTimeOAuthCoordinator"],
     });
     expect(wrangler.migrations?.some((migration) => migration.new_classes)).toBe(false);
     expect(wrangler.observability?.logs?.invocation_logs).toBe(false);
