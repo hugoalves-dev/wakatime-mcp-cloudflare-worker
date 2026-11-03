@@ -1,9 +1,7 @@
 // ABOUTME: Cloudflare Worker serving WakaTime account OAuth and MCP client OAuth 2.1.
 // ABOUTME: Legacy MCP_AUTH_TOKEN clients remain supported alongside OAuth clients.
-import { createMcpHandler } from "agents/mcp/server";
 import { isAuthorized } from "./auth.js";
 import { completeAuthorization, createAuthorizationUrl } from "./oauth.js";
-import { createServer } from "./server.js";
 import type { Env } from "./wakatime.js";
 export { OAuthCoordinator } from "./oauth-coordinator.js";
 
@@ -31,13 +29,7 @@ export default {
       return completeAuthorization(request, env);
     }
 
-    // Older clients with the static bearer token still work.
-    if (path === "/mcp" && await isAuthorized(request, env.MCP_AUTH_TOKEN)) {
-      const handler = createMcpHandler(() => createServer(env), { route: "/mcp" });
-      return handler(request, env, ctx);
-    }
-    // The official OAuth provider uses Cloudflare runtime modules, so load it only
-    // for OAuth routes (legacy bearer-token tests also run under Node.js).
+    // MCP access requires an OAuth 2.1 grant; static bearer bypass is disabled.
     if (path === "/mcp" && !env.OAUTH_KV) return unauthorized();
     // OAuth discovery, registration, authorization, token exchange and resource authentication.
     if (path === "/mcp" || path === "/authorize" || path.startsWith("/.well-known/") ||
