@@ -8,7 +8,7 @@
     "bindings": [
       {
         "name": "WAKATIME_OAUTH_COORDINATOR",
-        "class_name": "OAuthCoordinator"
+        "class_name": "WakaTimeOAuthCoordinator"
       }
     ]
   },
@@ -18,6 +18,10 @@
       "new_sqlite_classes": [
         "OAuthCoordinator"
       ]
+    }
+    ,{
+      "tag": "v2-wakatime-sqlite",
+      "new_sqlite_classes": ["WakaTimeOAuthCoordinator"]
     }
   ],
   "observability": {
