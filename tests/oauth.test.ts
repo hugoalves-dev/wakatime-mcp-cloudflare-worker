@@ -24,8 +24,8 @@ describe("WakaTime OAuth", () => {
     const url = new URL(await createAuthorizationUrl(env));
     expect(url.origin + url.pathname).toBe("https://wakatime.com/oauth/authorize");
     expect(url.searchParams.get("client_id")).toBe("client-id");
-    expect(url.searchParams.get("scope")).toBe("read_summaries");
-    expect(ns.storage.values.get(`state:${url.searchParams.get("state")}`)).toBeGreaterThan(Date.now());
+    expect(url.searchParams.get("scope")).toBe("email read_summaries");
+    expect(ns.storage.values.get(`state:${url.searchParams.get("state")}`)).toMatchObject({ expires: expect.any(Number) });
     expect(url.toString()).not.toContain(clientSecret);
   });
 
