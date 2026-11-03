@@ -3,12 +3,10 @@
 import { createMcpHandler } from "agents/mcp/server";
 import { isAuthorized } from "./auth.js";
 import { completeAuthorization, createAuthorizationUrl } from "./oauth.js";
-import { createOAuthProvider } from "./mcp-oauth.js";
 import { createServer } from "./server.js";
 import type { Env } from "./wakatime.js";
 export { OAuthCoordinator } from "./oauth-coordinator.js";
 
-const provider = createOAuthProvider();
 const unauthorized = () => Response.json({ error: "Unauthorized" }, {
   status: 401, headers: { "WWW-Authenticate": "Bearer" },
 });
@@ -38,10 +36,14 @@ export default {
       const handler = createMcpHandler(() => createServer(env), { route: "/mcp" });
       return handler(request, env, ctx);
     }
+    // The official OAuth provider uses Cloudflare runtime modules, so load it only
+    // for OAuth routes (legacy bearer-token tests also run under Node.js).
+    if (path === "/mcp" && !env.OAUTH_KV) return unauthorized();
     // OAuth discovery, registration, authorization, token exchange and resource authentication.
     if (path === "/mcp" || path === "/authorize" || path.startsWith("/.well-known/") ||
         path.startsWith("/oauth/")) {
-      return provider.fetch(request, env, ctx);
+      const { createOAuthProvider } = await import("./mcp-oauth.js");
+      return createOAuthProvider().fetch(request, env, ctx);
     }
     return notFound();
   },
