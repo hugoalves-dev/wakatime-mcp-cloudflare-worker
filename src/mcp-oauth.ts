@@ -1,6 +1,6 @@
 // OAuth 2.1 for MCP clients, separate from the WakaTime account OAuth flow.
 import { AuthorizationError, CimdFetchError, OAuthProvider } from "@cloudflare/workers-oauth-provider";
-import { isAuthorized } from "./auth.js";
+import { createAuthorizationUrl, processAuthorizationCallback } from "./oauth.js";
 import { createServer } from "./server.js";
 import { createMcpHandler } from "agents/mcp/server";
 import type { Env } from "./wakatime.js";
@@ -45,9 +45,7 @@ async function authorization(request: Request, env: Env): Promise<Response> {
         '<body><h1>Authorize ' + clientName + '?</h1><p>This client requests access to your WakaTime coding summaries.</p><p>' + clientIdentity + '</p>' +
         '<p>Tokens will be delivered to <strong>' + destination + '</strong>.</p>' + localWarning +
         '<form method="post" action="/authorize"><input type="hidden" name="handle" value="' + escapeHtml(consent.handle) + '">' +
-        '<p>Scopes:<br>' + scopes + '</p><label for="password">Owner access token (MCP_AUTH_TOKEN)</label>' +
-        '<input id="password" name="password" type="password" required autocomplete="off">' +
-        '<p><small>This password is used only to approve access. Do not enter your WakaTime OAuth client secret.</small></p>' +
+        '<p>Scopes:<br>' + scopes + '</p><p><small>Approval will redirect you to WakaTime to verify the configured account owner.</small></p>' +
         '<button name="decision" value="approve">Allow access</button><button name="decision" value="deny" formnovalidate>Cancel</button></form></body></html>';
       return html(page, 200, consent.headers);
     }
@@ -58,13 +56,25 @@ async function authorization(request: Request, env: Env): Promise<Response> {
       const denied = await oauth.denyConsent(request, handle);
       return new Response(null, { status: 302, headers: denied.headers });
     }
-    const password = String(form.get("password") ?? "");
-    // Never log the password or include it in redirect URLs.
-    const passwordRequest = new Request(request.url, { headers: { Authorization: "Bearer " + password } });
-    if (!(await isAuthorized(passwordRequest, env.MCP_AUTH_TOKEN))) {
-      return html('<!doctype html><meta charset="utf-8"><h1>Access denied</h1><p>Invalid owner token. Restart authorization from your MCP client.</p>', 403);
+    const destination = await createAuthorizationUrl(env, handle);
+    return new Response(null, { status: 302, headers: { Location: destination, "Cache-Control": "no-store" } });
+  } catch (error) {
+    if (error instanceof AuthorizationError && error.redirectTo) return Response.redirect(error.redirectTo, 302);
+    if (error instanceof AuthorizationError || error instanceof CimdFetchError) {
+      return html('<!doctype html><meta charset="utf-8"><h1>Authorization failed</h1><p>Please restart the connection from your MCP client.</p>', 400);
     }
-    const approved = await oauth.approveConsent(request, handle, { scope: form.getAll("scope").map(String) });
+    return html('<!doctype html><meta charset="utf-8"><h1>Authorization unavailable</h1>', 500);
+  }
+}
+
+async function finishWakaTimeAuthorization(request: Request, env: Env): Promise<Response> {
+  const result = await processAuthorizationCallback(request, env);
+  if (result.status !== 200) return html("<!doctype html><h1>WakaTime authorization failed</h1><p>Check the configured WakaTime owner identity and try connecting again.</p>", result.status);
+  if (!result.consentHandle) return html("<!doctype html><h1>WakaTime connected</h1><p>You may close this window and retry your MCP request.</p>");
+  const oauth = env.OAUTH_PROVIDER;
+  if (!oauth) return html("<h1>MCP authorization unavailable</h1>", 503);
+  try {
+    const approved = await oauth.approveConsent(request, result.consentHandle, { scope: ["mcp:read"] });
     const { redirectTo } = await oauth.completeAuthorization({
       request: approved.request,
       userId: "wakatime-mcp-owner",
@@ -74,12 +84,8 @@ async function authorization(request: Request, env: Env): Promise<Response> {
     });
     approved.headers.set("Location", redirectTo);
     return new Response(null, { status: 302, headers: approved.headers });
-  } catch (error) {
-    if (error instanceof AuthorizationError && error.redirectTo) return Response.redirect(error.redirectTo, 302);
-    if (error instanceof AuthorizationError || error instanceof CimdFetchError) {
-      return html('<!doctype html><meta charset="utf-8"><h1>Authorization failed</h1><p>Please restart the connection from your MCP client.</p>', 400);
-    }
-    return html('<!doctype html><meta charset="utf-8"><h1>Authorization unavailable</h1>', 500);
+  } catch {
+    return html("<!doctype html><h1>MCP authorization failed</h1><p>Restart authorization from your MCP client.</p>", 400);
   }
 }
 
@@ -97,6 +103,7 @@ export function createOAuthProvider(): OAuthProvider<Env> {
     defaultHandler: {
       fetch(request: Request, env: Env) {
         if (new URL(request.url).pathname === "/authorize") return authorization(request, env);
+        if (new URL(request.url).pathname === "/oauth/callback") return finishWakaTimeAuthorization(request, env);
         return new Response("Not found", { status: 404 });
       },
     },
