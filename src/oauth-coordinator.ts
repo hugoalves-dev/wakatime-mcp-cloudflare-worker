@@ -20,8 +20,8 @@ export class OAuthCoordinator {
     const url = new URL(request.url);
     try {
       if (url.pathname === "/start") {
-        const { state } = await request.json() as { state: string };
-        await this.state.storage.put(`state:${state}`, Date.now() + 600_000);
+        const { state, consentHandle } = await request.json() as { state: string; consentHandle?: string };
+        await this.state.storage.put(`state:${state}`, { expires: Date.now() + 600_000, consentHandle });
         return Response.json({ ok: true });
       }
       if (url.pathname === "/callback") return await this.exclusive(async () => this.callback(request));
@@ -50,15 +50,33 @@ export class OAuthCoordinator {
     const { code, state } = await request.json() as { code: string; state: string };
     const key = `state:${state}`;
     const valid = await this.state.storage.transaction(async (txn) => {
-      const expires = await txn.get<number>(key);
-      if (expires === undefined || expires < Date.now()) return false;
+      const saved = await txn.get<number | { expires: number; consentHandle?: string }>(key);
+      const expires = typeof saved === "number" ? saved : saved?.expires;
+      if (expires === undefined || expires < Date.now()) return undefined;
       await txn.delete(key);
-      return true;
+      return typeof saved === "number" ? {} : saved;
     });
     if (!valid) return Response.json({ ok: false }, { status: 400 });
     const record = await this.exchange({ grant_type: "authorization_code", code });
+    if (valid.consentHandle) {
+      // DCR proves the client's redirect URI, not the identity of the account owner.
+      // Only the configured WakaTime owner may authorize an MCP client.
+      const ownerEmail = this.env.WAKATIME_OWNER_EMAIL?.trim().toLowerCase();
+      if (!ownerEmail) return Response.json({ error: "Owner identity is not configured" }, { status: 503 });
+      const response = await fetch("https://api.wakatime.com/api/v1/users/current", {
+        method: "GET", redirect: "manual",
+        headers: { Authorization: `Bearer ${record.access_token}`, Accept: "application/json" },
+      });
+      if (!response.ok) return Response.json({ error: "Could not verify owner" }, { status: 403 });
+      const payload = await response.json() as { data?: { email?: unknown; is_email_confirmed?: unknown } };
+      if (typeof payload.data?.email !== "string" ||
+          payload.data.email.trim().toLowerCase() !== ownerEmail ||
+          payload.data.is_email_confirmed === false) {
+        return Response.json({ error: "Not the configured owner" }, { status: 403 });
+      }
+    }
     await this.state.storage.put("token", record);
-    return Response.json({ ok: true });
+    return Response.json({ ok: true, consentHandle: valid.consentHandle });
   }
 
   private async readRecord(): Promise<TokenRecord> {
