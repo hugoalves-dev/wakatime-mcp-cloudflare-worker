@@ -1,60 +1,76 @@
 # WakaTime MCP for Cloudflare Workers
 
-An authenticated remote MCP server for WakaTime summaries. The Cloudflare Worker exposes the `wakatime_summaries` and `wakatime_today` tools over Streamable HTTP at `/mcp`.
- 
+An authenticated remote MCP server for WakaTime summaries. The Worker exposes `wakatime_summaries` and `wakatime_today` over Streamable HTTP at `/mcp`. WakaTime API reads use a single account's OAuth 2.0 token; MCP clients continue to authenticate with the separate `MCP_AUTH_TOKEN`.
+
+## Configure WakaTime OAuth
+
+Create an OAuth app at [wakatime.com/apps](https://wakatime.com/apps). Request the `read_summaries` scope and register the callback URL for each deployment, exactly as configured by `WAKATIME_OAUTH_REDIRECT_URI` in `wrangler.jsonc`. The production callback uses `https://<worker-name>.<account-subdomain>.workers.dev/oauth/callback`; local development uses `http://localhost:8787/oauth/callback`.
+
+Update the `vars` values in `wrangler.jsonc`:
+
+- `WAKATIME_OAUTH_CLIENT_ID`: the OAuth app's client ID.
+- `WAKATIME_OAUTH_REDIRECT_URI`: the callback URL registered for this deployment.
+
+The OAuth coordinator is a named Durable Object. Wrangler creates and migrates it during deployment; it serializes state consumption and token refreshes and stores the current token pair in strongly consistent Durable Object storage. Do not bind another application to this coordinator.
+
+
+Wrangler invocation logs are disabled because Cloudflare includes full request URLs in those logs and the OAuth callback URL contains the one-use authorization code and state. Workers Logs remain enabled; the Worker does not log OAuth values.
+
 ## Local development
 
-Use Node.js 24 and npm. Install dependencies and create an ignored `.dev.vars` file containing your own values:
+Use Node.js 24 and npm. Create an ignored `.dev.vars` file with the OAuth client secret and a long random MCP token:
 
 ```text
-WAKATIME_API_KEY=<your WakaTime API key>
+WAKATIME_OAUTH_CLIENT_SECRET=<your WakaTime OAuth client secret>
 MCP_AUTH_TOKEN=<a long random token for MCP clients>
 ```
 
-Keep `.dev.vars` private. Start the Worker with:
+After setting the OAuth client ID and local callback URL in `wrangler.jsonc`, install dependencies and start the Worker:
 
 ```sh
 npm ci
 npm run dev
 ```
 
-Wrangler serves the endpoint at `http://localhost:8787/mcp`. Each MCP request must include `Authorization: Bearer <MCP_AUTH_TOKEN>`.
+The MCP endpoint is `http://localhost:8787/mcp`. Every MCP request must include `Authorization: Bearer <MCP_AUTH_TOKEN>`.
 
-Run checks with:
+Authorize the Worker once by requesting a setup URL with the MCP token:
 
 ```sh
-npm test
-npm run build
+curl -H 'Authorization: Bearer <MCP_AUTH_TOKEN>' http://localhost:8787/oauth/start
 ```
 
-The build script typechecks TypeScript and runs Wrangler's deployment dry run. Neither the test suite nor build needs live WakaTime or Cloudflare credentials.
+Open the returned `authorization_url` in a browser and approve access. WakaTime redirects to the callback, which atomically consumes the one-use state, exchanges the authorization code server-side, and stores the tokens in the Durable Object. The callback page reports success without showing credentials. If the refresh token is revoked or cannot be renewed, repeat this setup flow.
 
-## Tools
+## Worker routes and tools
 
+- `GET /oauth/start` requires the same `MCP_AUTH_TOKEN` as `/mcp` and returns a WakaTime authorization URL.
+- `GET /oauth/callback` is the registered OAuth redirect. It requires a valid unexpired one-use state created by `/oauth/start`.
+- `/mcp` remains protected by `MCP_AUTH_TOKEN`.
 - `wakatime_summaries` accepts required valid `start` and `end` dates in `YYYY-MM-DD` format (`start` must be on or before `end`), plus optional `project` and IANA `timezone` values. Omitting `timezone` uses the WakaTime account's timezone.
 - `wakatime_today` accepts optional `project` and `timezone` values. The default timezone is `Asia/Tokyo`.
 
-Both tools use `GET https://api.wakatime.com/api/v1/users/current/summaries` with the documented `timezone` query parameter. Today's date is calculated in the same timezone sent to WakaTime. API-key authentication uses `Authorization: Basic <base64(API_KEY)>`, without adding a username/password colon, and requests accept JSON. Successful results preserve the complete summaries JSON envelope, including daily and aggregate fields.
+Both tools call `GET https://api.wakatime.com/api/v1/users/current/summaries` with the documented `timezone` query parameter and `Authorization: Bearer <access_token>`. Today's date is calculated in the same timezone sent to WakaTime. Successful results preserve the complete summaries JSON envelope, including daily and aggregate fields.
 
-Upstream failures return MCP tool results with `isError: true`. Diagnostics include HTTP status, status text, sanitized `error`/`errors` messages, endpoint, and query parameter names. Request context contains no query values. Known credentials and named credential values are redacted; unrelated response fields and raw non-JSON bodies are excluded. Network and response-stream exceptions use controlled messages.
-
-Requests are not retried automatically. HTTP 429 includes rate-limit guidance and a valid `Retry-After` header when supplied. WakaTime also documents 302 redirects as possible rate limiting; redirects are reported without following them. The [official API docs](https://wakatime.com/developers) document `error`/`errors`, but do not guarantee their nested structure or a `Retry-After` header.
+Upstream failures return MCP tool results with `isError: true`. Diagnostics include HTTP status, status text, sanitized `error`/`errors` messages, endpoint, and query parameter names. Request context contains no query values. Known credentials and named credential values are redacted; unrelated response fields and raw non-JSON bodies are excluded. Network, OAuth, and response-stream exceptions use controlled messages. Requests are not retried automatically, except that an API 401 triggers one token refresh and one retry. HTTP 403 is returned without refreshing. HTTP 429 includes rate-limit guidance and a valid `Retry-After` header when supplied. WakaTime also documents 302 redirects as possible rate limiting; redirects are reported without following them.
 
 ## Deploy
 
-Set the WakaTime API key and the separate MCP bearer token as Cloudflare Worker secrets. Wrangler prompts for each secret value:
+After registering the production callback and setting the production variables in `wrangler.jsonc`, store secrets in Cloudflare and deploy:
 
 ```sh
-npx wrangler secret put WAKATIME_API_KEY
+npx wrangler secret put WAKATIME_OAUTH_CLIENT_SECRET
 npx wrangler secret put MCP_AUTH_TOKEN
 npm run deploy
 ```
 
-The Worker requires both secrets at runtime. An unset MCP token rejects all requests. Keep the WakaTime API key in the Worker secret store; it is not part of the build or GitHub Actions deployment environment.
+The OAuth client secret and MCP token are Cloudflare secrets. The client ID and redirect URI are non-secret Worker variables. The OAuth access and refresh tokens are stored only in Durable Object storage. CI does not need or receive OAuth credentials or tokens.
+
+Run the `/oauth/start` flow once for the deployed Worker as well, using its `/mcp` bearer token. The OAuth authorization code and state are handled by the OAuth redirect flow; do not copy or log callback query values. Reauthorize by repeating `/oauth/start` if WakaTime access is revoked or refresh fails.
 
 ## Configure an MCP client
 
-Use the deployed Worker URL with `/mcp` and supply the bearer token in the `Authorization` header. For clients with HTTP header configuration, the shape is:
+Use the deployed Worker URL with `/mcp` and supply the MCP bearer token in the `Authorization` header. For clients with HTTP header configuration:
 
 ```json
 {
@@ -65,13 +81,17 @@ Use the deployed Worker URL with `/mcp` and supply the bearer token in the `Auth
 }
 ```
 
-The client only needs the MCP bearer token. Never provide it with the WakaTime API key.
+MCP clients need only `MCP_AUTH_TOKEN`; never provide them with the WakaTime OAuth client secret or OAuth tokens.
 
-## CI and deployment
+## Checks and CI
 
-GitHub Actions runs separate `test`, `build`, and `deploy` jobs. The build job runs after tests succeed; deployment waits for both test and build. Deployment runs only on a push to `main`. Configure these repository Actions secrets:
+Run local checks with:
 
-- `CLOUDFLARE_API_TOKEN` with permission to deploy Workers.
-- `CLOUDFLARE_ACCOUNT_ID` for the Cloudflare account.
+```sh
+npm test
+npm run build
+```
 
-Set `WAKATIME_API_KEY` and `MCP_AUTH_TOKEN` directly in Cloudflare with Wrangler before using the deployed endpoint. CI never reads or prints those values.
+The build typechecks TypeScript and runs Wrangler's deployment dry run. Tests and build do not require live WakaTime or Cloudflare credentials.
+
+GitHub Actions runs separate `test`, `build`, and `deploy` jobs. Deployment runs only on a push to `main`. Configure repository Actions secrets `CLOUDFLARE_API_TOKEN` with permission to deploy Workers and `CLOUDFLARE_ACCOUNT_ID` for the Cloudflare account. CI never reads or prints OAuth credentials or tokens.

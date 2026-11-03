@@ -1,8 +1,22 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index.js";
+import { MemoryCoordinatorNamespace } from "./helpers/coordinator.js";
 
+const oauthAccessToken = "waka_tok_worker_access";
+const oauthRefreshToken = "waka_tok_worker_refresh";
+const oauthClientSecret = "worker-oauth-client-secret";
+const tokenStore = new MemoryCoordinatorNamespace({
+  WAKATIME_OAUTH_CLIENT_ID: "client-id", WAKATIME_OAUTH_CLIENT_SECRET: oauthClientSecret,
+  WAKATIME_OAUTH_REDIRECT_URI: "https://worker.example.com/oauth/callback",
+});
+tokenStore.values.set("oauth:token", JSON.stringify({
+  access_token: oauthAccessToken, refresh_token: oauthRefreshToken, expires_at: null,
+}));
 const env = {
-  WAKATIME_API_KEY: "wakatime-secret-key",
+  WAKATIME_OAUTH_CLIENT_ID: "client-id",
+  WAKATIME_OAUTH_CLIENT_SECRET: oauthClientSecret,
+  WAKATIME_OAUTH_REDIRECT_URI: "https://worker.example.com/oauth/callback",
+  WAKATIME_OAUTH_COORDINATOR: tokenStore as unknown as DurableObjectNamespace,
   MCP_AUTH_TOKEN: "remote-mcp-token",
 };
 
@@ -53,9 +67,9 @@ describe("Cloudflare Worker MCP endpoint", () => {
       const text = await response.text();
       expect(response.status).toBe(401);
       expect(text).not.toContain(env.MCP_AUTH_TOKEN);
-      expect(text).not.toContain(env.WAKATIME_API_KEY);
+      expect(text).not.toContain(env.WAKATIME_OAUTH_CLIENT_SECRET);
       expect([...response.headers.values()].join(" ")).not.toContain(env.MCP_AUTH_TOKEN);
-      expect([...response.headers.values()].join(" ")).not.toContain(env.WAKATIME_API_KEY);
+      expect([...response.headers.values()].join(" ")).not.toContain(env.WAKATIME_OAUTH_CLIENT_SECRET);
     }
   });
 
@@ -125,7 +139,7 @@ describe("Cloudflare Worker MCP endpoint", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = new URL(String(input));
       requestedUrls.push(url);
-      expect(new Headers(init?.headers).get("Authorization")).toBe("Basic d2FrYXRpbWUtc2VjcmV0LWtleQ==");
+      expect(new Headers(init?.headers).get("Authorization")).toBe(`Bearer ${oauthAccessToken}`);
       return new Response('{"data":[{"grand_total":"1 hr"}]}', { status: 200 });
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -201,9 +215,9 @@ describe("Cloudflare Worker MCP endpoint", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  it.each([400, 401, 403, 429, 500])("returns HTTP %i upstream failures as sanitized MCP tool errors", async (status) => {
+  it.each([400, 403, 429, 500])("returns HTTP %i upstream failures as sanitized MCP tool errors", async (status) => {
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({
-      error: `Upstream rejected ${env.WAKATIME_API_KEY} ${env.MCP_AUTH_TOKEN}`,
+      error: `Upstream rejected ${env.WAKATIME_OAUTH_CLIENT_SECRET} ${oauthAccessToken} ${oauthRefreshToken} ${env.MCP_AUTH_TOKEN}`,
     }, { status })));
     for (const name of ["wakatime_summaries", "wakatime_today"]) {
       const response = await worker.fetch(jsonRpcRequest({
@@ -214,12 +228,14 @@ describe("Cloudflare Worker MCP endpoint", () => {
       const result = await readJsonRpc(response);
       expect(result).toMatchObject({ result: { isError: true, content: [{ text: expect.stringContaining(`WakaTime API request failed: ${status}`) }] } });
       expect(result).not.toHaveProperty("error");
-      expect(JSON.stringify(result)).not.toContain(env.WAKATIME_API_KEY);
+      expect(JSON.stringify(result)).not.toContain(env.WAKATIME_OAUTH_CLIENT_SECRET);
+      expect(JSON.stringify(result)).not.toContain(oauthAccessToken);
+      expect(JSON.stringify(result)).not.toContain(oauthRefreshToken);
       expect(JSON.stringify(result)).not.toContain(env.MCP_AUTH_TOKEN);
     }
   });
 
-  it("returns a useful tool error when the API key binding is missing", async () => {
+  it("returns a useful tool error when the OAuth token binding is missing", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     const response = await worker.fetch(jsonRpcRequest({
@@ -228,7 +244,7 @@ describe("Cloudflare Worker MCP endpoint", () => {
     }, env.MCP_AUTH_TOKEN), { MCP_AUTH_TOKEN: env.MCP_AUTH_TOKEN }, {} as ExecutionContext);
     expect(response.status).toBe(200);
     const result = await readJsonRpc(response);
-    expect(result).toMatchObject({ result: { isError: true, content: [{ text: expect.stringContaining("WAKATIME_API_KEY is not configured") }] } });
+    expect(result).toMatchObject({ result: { isError: true, content: [{ text: expect.stringContaining("OAuth credentials are unavailable") }] } });
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -241,10 +257,65 @@ describe("Cloudflare Worker MCP endpoint", () => {
     expect(response.status).toBe(404);
   });
 
+  it("returns an authorization URL from the MCP-protected OAuth start route", async () => {
+    const response = await worker.fetch(new Request("https://worker.example.com/oauth/start", {
+      headers: { Authorization: `Bearer ${env.MCP_AUTH_TOKEN}` },
+    }), env, {} as ExecutionContext);
+    const result = await response.json() as { authorization_url: string };
+    const authorizationUrl = new URL(result.authorization_url);
+    expect(response.status).toBe(200);
+    expect(authorizationUrl.origin + authorizationUrl.pathname).toBe("https://wakatime.com/oauth/authorize");
+    expect(authorizationUrl.searchParams.get("scope")).toBe("read_summaries");
+    expect(authorizationUrl.searchParams.get("redirect_uri")).toBe(env.WAKATIME_OAUTH_REDIRECT_URI);
+    const state = authorizationUrl.searchParams.get("state");
+    expect(state).toBeTruthy();
+    expect(tokenStore.values.get(`oauth:state:${state}`)).toBe("1");
+    expect(result.authorization_url).not.toContain(oauthClientSecret);
+  });
+
+  it("rejects an unauthenticated OAuth start request", async () => {
+    const before = tokenStore.values.size;
+    const response = await worker.fetch(new Request("https://worker.example.com/oauth/start"), env, {} as ExecutionContext);
+    expect(response.status).toBe(401);
+    expect(tokenStore.values.size).toBe(before);
+  });
+
+  it("rejects an invalid OAuth callback state without contacting WakaTime", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const response = await worker.fetch(new Request(
+      "https://worker.example.com/oauth/callback?code=private-code&state=invalid-state",
+    ), env, {} as ExecutionContext);
+    const text = await response.text();
+    expect(response.status).toBe(400);
+    expect(text).not.toMatch(/private-code|invalid-state|waka_tok_|worker-oauth-client-secret/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("accepts a valid OAuth callback without MCP auth and stores tokens without exposing them", async () => {
+    const state = "worker-valid-oauth-state";
+    tokenStore.values.set(`oauth:state:${state}`, "1");
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      access_token: "waka_tok_callback_access",
+      refresh_token: "waka_tok_callback_refresh",
+      expires_in: 3600,
+    })));
+    const response = await worker.fetch(new Request(
+      `https://worker.example.com/oauth/callback?code=private-code&state=${state}`,
+    ), env, {} as ExecutionContext);
+    const text = await response.text();
+    expect(response.status).toBe(200);
+    expect(text).not.toMatch(/private-code|waka_tok_callback|worker-oauth-client-secret/);
+    expect(tokenStore.values.has(`oauth:state:${state}`)).toBe(false);
+    expect(JSON.parse(tokenStore.values.get("oauth:token")!)).toMatchObject({
+      access_token: "waka_tok_callback_access", refresh_token: "waka_tok_callback_refresh",
+    });
+  });
+
   it("fails closed when the authentication binding is not configured", async () => {
     const response = await worker.fetch(
       jsonRpcRequest({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }, env.MCP_AUTH_TOKEN),
-      { WAKATIME_API_KEY: env.WAKATIME_API_KEY },
+      {},
       {} as ExecutionContext,
     );
     expect(response.status).toBe(401);

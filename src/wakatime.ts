@@ -1,16 +1,13 @@
 // ABOUTME: Worker-safe WakaTime API and timezone helpers.
 // ABOUTME: All credentials arrive through explicit Cloudflare environment bindings.
+import { getAccessToken, getRefreshToken, refreshAccessToken } from "./oauth.js";
 
 export interface Env {
-  WAKATIME_API_KEY?: string;
   MCP_AUTH_TOKEN?: string;
-}
-
-export function basicAuthHeaderFromApiKey(apiKey: string): string {
-  const bytes = new TextEncoder().encode(apiKey);
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return `Basic ${btoa(binary)}`;
+  WAKATIME_OAUTH_CLIENT_ID?: string;
+  WAKATIME_OAUTH_CLIENT_SECRET?: string;
+  WAKATIME_OAUTH_REDIRECT_URI?: string;
+  WAKATIME_OAUTH_COORDINATOR?: DurableObjectNamespace;
 }
 
 export function todayYmd(tz = "Asia/Tokyo"): string {
@@ -36,10 +33,17 @@ export class WakaTimeRequestError extends Error {
   }
 }
 
-function sanitizeDiagnostic(text: string, env: Env): string {
-  const secrets = [env.WAKATIME_API_KEY, env.MCP_AUTH_TOKEN]
+function base64(value: string): string {
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+function sanitizeDiagnostic(text: string, env: Env, extraSecrets: string[] = []): string {
+  const secrets = [env.WAKATIME_OAUTH_CLIENT_SECRET, env.MCP_AUTH_TOKEN, ...extraSecrets]
     .filter((value): value is string => Boolean(value))
-    .flatMap((value) => [value, encodeURIComponent(value), basicAuthHeaderFromApiKey(value).slice(6)])
+    .flatMap((value) => [value, encodeURIComponent(value), base64(value)])
     .sort((a, b) => b.length - a.length);
   for (const secret of secrets) text = text.split(secret).join("[REDACTED]");
   return text
@@ -87,36 +91,50 @@ export async function wakatimeGet(
   path: string,
   qs: Record<string, string | undefined>,
 ): Promise<string> {
-  const apiKey = env.WAKATIME_API_KEY;
-  if (!apiKey?.trim()) {
-    throw new WakaTimeRequestError("WakaTime API request failed: WAKATIME_API_KEY is not configured.");
-  }
-
   const url = new URL(`https://api.wakatime.com/api/v1/${path}`);
   for (const [key, value] of Object.entries(qs)) {
     if (value != null && value !== "") url.searchParams.set(key, value);
   }
 
   const context = `endpoint: ${url.pathname}; query parameters: ${[...url.searchParams.keys()].join(", ") || "none"}`;
-  const failure = (detail: string) => new WakaTimeRequestError(
-    `WakaTime API request failed: ${sanitizeDiagnostic(detail, env)} (${sanitizeDiagnostic(context, env)})`,
+  const failure = (detail: string, credentials: string[] = []) => new WakaTimeRequestError(
+    `WakaTime API request failed: ${sanitizeDiagnostic(detail, env, credentials)} (${sanitizeDiagnostic(context, env, credentials)})`,
   );
 
+  let accessToken: string;
+  let refreshToken: string;
+  try {
+    accessToken = await getAccessToken(env);
+    refreshToken = await getRefreshToken(env);
+  } catch {
+    throw failure("OAuth credentials are unavailable; authorize or reauthorize WakaTime");
+  }
+  const refreshSecrets = [refreshToken];
+
+  const request = async (token: string) => fetch(url, {
+    method: "GET",
+    // Do not follow redirects with the API credential.
+    redirect: "manual",
+    headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+  });
   let response: Response;
   try {
-    response = await fetch(url, {
-      method: "GET",
-      // WakaTime documents 302 as a possible rate-limit response. Do not follow
-      // redirects with the API credential or turn them into opaque timeouts.
-      redirect: "manual",
-      headers: {
-        Authorization: basicAuthHeaderFromApiKey(apiKey),
-        Accept: "application/json",
-      },
-    });
+    response = await request(accessToken);
   } catch {
-    // Fetch errors can contain headers or credentials; do not forward them.
-    throw failure("network request failed; try again later");
+    throw failure("network request failed; try again later", [accessToken, ...refreshSecrets]);
+  }
+
+  if (response.status === 401) {
+    try { await response.body?.cancel(); } catch { /* The retry does not depend on draining the 401 body. */ }
+    try {
+      accessToken = await refreshAccessToken(env, accessToken);
+      refreshSecrets.push(refreshToken);
+      refreshToken = await getRefreshToken(env);
+      refreshSecrets.push(refreshToken);
+      response = await request(accessToken);
+    } catch {
+      throw failure("401 Unauthorized; OAuth refresh failed; reauthorize WakaTime");
+    }
   }
 
   const status = `${response.status} ${response.statusText || statusNames[response.status] || "HTTP error"}`;
@@ -124,13 +142,13 @@ export async function wakatimeGet(
   try {
     text = await response.text();
   } catch {
-    throw failure(`${status}: unable to read upstream response`);
+    throw failure(`${status}: unable to read upstream response`, [accessToken, ...refreshSecrets]);
   }
   let body: unknown;
   try { body = JSON.parse(text); } catch { body = undefined; }
 
   if (!response.ok) {
-    let detail = sanitizeDiagnostic(upstreamErrorDetails(body), env).slice(0, 1000)
+    let detail = sanitizeDiagnostic(upstreamErrorDetails(body), env, [accessToken, ...refreshSecrets]).slice(0, 1000)
       || "no usable error details from upstream";
     if (response.status === 302) detail += "; possible rate limit redirect; spread requests over a few minutes";
     if (response.status === 429) {
@@ -143,10 +161,10 @@ export async function wakatimeGet(
         if (Number.isFinite(date)) detail += `; Retry-After: ${new Date(date).toUTCString()}`;
       }
     }
-    throw failure(`${status}: ${detail}`);
+    throw failure(`${status}: ${detail}`, [accessToken, ...refreshSecrets]);
   }
   if (!isObject(body) || !Array.isArray(body.data) || body.error || body.errors) {
-    throw failure(`${status}: invalid WakaTime summaries response; expected a JSON object with a data array`);
+    throw failure(`${status}: invalid WakaTime summaries response; expected a JSON object with a data array`, [accessToken, ...refreshSecrets]);
   }
   // Preserve all daily/aggregate fields without assuming a fixed summary schema.
   return text;

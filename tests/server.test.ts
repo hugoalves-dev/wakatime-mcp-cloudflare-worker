@@ -1,9 +1,17 @@
 import { createMcpHandler } from "agents/mcp/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createServer } from "../src/server.js";
+import { MemoryCoordinatorNamespace, setToken } from "./helpers/coordinator.js";
 
-function createRpcHandler(apiKey = "secret-key") {
-  return createMcpHandler(() => createServer({ WAKATIME_API_KEY: apiKey }), {
+const oauthAccessToken = "waka_tok_server_access";
+function createRpcHandler() {
+  const base = { WAKATIME_OAUTH_CLIENT_ID: "client-id", WAKATIME_OAUTH_CLIENT_SECRET: "client-secret", WAKATIME_OAUTH_REDIRECT_URI: "https://worker.example.com/oauth/callback" };
+  const store = new MemoryCoordinatorNamespace(base);
+  setToken(store, { access_token: oauthAccessToken, refresh_token: "waka_tok_server_refresh", expires_at: null });
+  return createMcpHandler(() => createServer({
+    ...base,
+    WAKATIME_OAUTH_COORDINATOR: store as unknown as DurableObjectNamespace,
+  }), {
     route: "/mcp",
     allowedHostnames: ["example.com"],
     allowedOriginHostnames: [],
@@ -70,7 +78,7 @@ describe("WakaTime MCP server", () => {
     ]);
   });
 
-  it("calls summaries with the existing parameters and API key binding", async () => {
+  it("calls summaries with the existing parameters and OAuth bearer token", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = new URL(String(input));
       expect(url.pathname).toBe("/api/v1/users/current/summaries");
@@ -79,7 +87,7 @@ describe("WakaTime MCP server", () => {
       expect(url.searchParams.get("project")).toBe("demo");
       expect(url.searchParams.get("timezone")).toBe("Asia/Tokyo");
       expect(url.searchParams.has("tz")).toBe(false);
-      expect(new Headers(init?.headers).get("Authorization")).toBe("Basic c2VjcmV0LWtleQ==");
+      expect(new Headers(init?.headers).get("Authorization")).toBe(`Bearer ${oauthAccessToken}`);
       return new Response('{"data":[]}', { status: 200 });
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -125,7 +133,7 @@ describe("WakaTime MCP server", () => {
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 
-  it("returns protocol errors for invalid input without exposing the API key", async () => {
+  it("returns protocol errors for invalid input without exposing the OAuth token", async () => {
     const handler = createRpcHandler();
     await initialize(handler);
     const result = await rpc(handler, {
@@ -190,16 +198,16 @@ describe("WakaTime MCP server", () => {
   });
 
   it.each(["wakatime_summaries", "wakatime_today"])("returns upstream diagnostics as an MCP tool error for %s", async (name) => {
-    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ error: "Invalid API key secret-key" }, {
-      status: 401, statusText: "Unauthorized",
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ error: `Invalid access token ${oauthAccessToken}` }, {
+      status: 403, statusText: "Forbidden",
     })));
     const result = await rpc(createRpcHandler(), {
       jsonrpc: "2.0", id: 13, method: "tools/call",
       params: { name, arguments: name === "wakatime_summaries" ? { start: "2025-01-01", end: "2025-01-02" } : {} },
     });
-    expect(result).toMatchObject({ result: { isError: true, content: [{ type: "text", text: expect.stringContaining("401 Unauthorized: Invalid API key [REDACTED]") }] } });
+    expect(result).toMatchObject({ result: { isError: true, content: [{ type: "text", text: expect.stringContaining("403 Forbidden: Invalid access token [REDACTED]") }] } });
     expect(result).not.toHaveProperty("error");
-    expect(JSON.stringify(result)).not.toContain("secret-key");
+    expect(JSON.stringify(result)).not.toContain(oauthAccessToken);
   });
 
   it("rejects unexpected arguments instead of silently stripping them", async () => {
